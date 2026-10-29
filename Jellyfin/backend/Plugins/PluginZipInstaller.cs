@@ -66,6 +66,42 @@ public static class PluginZipInstaller
         return true;
     }
 
+    public static async Task<PluginInstallResult> InstallAsync(
+        Stream zip,
+        string pluginsRoot,
+        PluginZipLimits? limits = null,
+        CancellationToken cancellationToken = default)
+    {
+        limits ??= new PluginZipLimits();
+        if (zip == null)
+        {
+            return PluginInstallResult.Fail("No zip was uploaded.");
+        }
+
+        try
+        {
+            if (!zip.CanSeek)
+            {
+                var buffered = new MemoryStream();
+                var limited = new BoundedReadStream(zip, limits.MaxZipBytes);
+                await limited.CopyToAsync(buffered, cancellationToken).ConfigureAwait(false);
+                if (limited.Exceeded)
+                {
+                    return PluginInstallResult.Fail("Zip is too large.");
+                }
+
+                buffered.Position = 0;
+                zip = buffered;
+            }
+
+            return Install(zip, pluginsRoot, limits);
+        }
+        catch (Exception)
+        {
+            return PluginInstallResult.Fail("The plugin could not be installed.");
+        }
+    }
+
     public static PluginInstallResult Install(Stream zip, string pluginsRoot, PluginZipLimits? limits = null)
     {
         limits ??= new PluginZipLimits();
@@ -366,6 +402,85 @@ public static class PluginZipInstaller
         catch
         {
             // The caller surfaces a restart hint when a locked file survives.
+        }
+    }
+
+    /// <summary>Stops the async copy once the upload passes the zip size cap.</summary>
+    private sealed class BoundedReadStream : Stream
+    {
+        private readonly Stream _inner;
+        private readonly long _max;
+        private long _total;
+
+        public BoundedReadStream(Stream inner, long max)
+        {
+            _inner = inner;
+            _max = max;
+        }
+
+        public bool Exceeded { get; private set; }
+
+        public override bool CanRead => true;
+
+        public override bool CanSeek => false;
+
+        public override bool CanWrite => false;
+
+        public override long Length => throw new NotSupportedException();
+
+        public override long Position
+        {
+            get => throw new NotSupportedException();
+            set => throw new NotSupportedException();
+        }
+
+        public override void Flush()
+        {
+        }
+
+        public override int Read(byte[] buffer, int offset, int count)
+        {
+            if (Exceeded)
+            {
+                return 0;
+            }
+
+            var read = _inner.Read(buffer, offset, count);
+            return Count(read);
+        }
+
+        public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+        {
+            if (Exceeded)
+            {
+                return 0;
+            }
+
+            var read = await _inner.ReadAsync(buffer, cancellationToken).ConfigureAwait(false);
+            return Count(read);
+        }
+
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+
+        public override void SetLength(long value) => throw new NotSupportedException();
+
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+
+        private int Count(int read)
+        {
+            if (read <= 0)
+            {
+                return 0;
+            }
+
+            _total += read;
+            if (_total > _max)
+            {
+                Exceeded = true;
+                return 0;
+            }
+
+            return read;
         }
     }
 }

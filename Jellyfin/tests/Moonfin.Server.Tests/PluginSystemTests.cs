@@ -1,8 +1,11 @@
 using System.IO.Compression;
 using System.Reflection;
 using System.Text.Json;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging.Abstractions;
 using Moonfin.Server.Api;
 using Moonfin.Server.Plugins;
+using Moonfin.Server.Services;
 using Xunit;
 
 namespace Moonfin.Server.Tests;
@@ -477,5 +480,480 @@ public class HelloPluginSampleTests
         public void MapPut(string relativePath, PluginRouteHandler handler) => _routes["PUT " + relativePath] = handler;
 
         public void MapDelete(string relativePath, PluginRouteHandler handler) => _routes["DELETE " + relativePath] = handler;
+    }
+}
+
+public class PluginServerLoadGateTests
+{
+    [Fact]
+    public void DisabledAndUnmetRequiresAreNotLoaded()
+    {
+        var manifests = new[]
+        {
+            Must("""{"id":"off","name":"Off","version":"1","description":"","provides":["off.flag"],"slots":["events"],"server":"OffModule","minHostApi":1}"""),
+            Must("""{"id":"need","name":"Need","version":"1","description":"","provides":["need.flag"],"requires":["tmdb"],"slots":["events"],"server":"NeedModule","minHostApi":1}"""),
+            Must("""{"id":"ready","name":"Ready","version":"1","description":"","provides":["ready.flag"],"requires":["messages"],"slots":["events"],"server":"ReadyModule","minHostApi":1}"""),
+            Must("""{"id":"shelf","name":"Shelf","version":"1","description":"","provides":["shelf.rows"],"slots":["homeRow"],"minHostApi":1}"""),
+            Must("""{"id":"future","name":"Future","version":"1","description":"","provides":[],"slots":["events"],"server":"FutureModule","minHostApi":9}"""),
+        };
+
+        var ids = PluginCapabilityResolver.SelectServerLoadIds(
+            manifests,
+            new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "off" },
+            new HashSet<string>(StringComparer.Ordinal) { "messages" },
+            MoonbasePlugins.HostApi);
+
+        Assert.Equal(new[] { "ready" }, ids);
+    }
+
+    [Fact]
+    public void ADependentLoadsOnlyAfterItsProvider()
+    {
+        var manifests = new[]
+        {
+            Must("""{"id":"beta","name":"Beta","version":"1","description":"","provides":["beta.ready"],"requires":["alpha.ready"],"slots":["homeRow"],"server":"BetaModule","minHostApi":1}"""),
+            Must("""{"id":"alpha","name":"Alpha","version":"1","description":"","provides":["alpha.ready"],"slots":["events"],"server":"AlphaModule","minHostApi":1}"""),
+        };
+
+        var ids = PluginCapabilityResolver.SelectServerLoadIds(
+            manifests,
+            new HashSet<string>(),
+            new HashSet<string>(),
+            1);
+
+        Assert.Equal(new[] { "alpha", "beta" }, ids);
+
+        var disabledProvider = PluginCapabilityResolver.SelectServerLoadIds(
+            manifests,
+            new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "alpha" },
+            new HashSet<string>(),
+            1);
+        Assert.Empty(disabledProvider);
+    }
+
+    [Fact]
+    public void UnloadedPluginWithUnmetRequiresDoesNotAskForARestart()
+    {
+        var status = Assert.Single(PluginCapabilityResolver.Resolve(
+            new[]
+            {
+                Must("""{"id":"need","name":"Need","version":"1","description":"","provides":["need.flag"],"requires":["tmdb"],"slots":["events"],"server":"NeedModule","minHostApi":1}"""),
+            },
+            new Dictionary<string, IReadOnlyCollection<string>>(),
+            new HashSet<string>(),
+            new HashSet<string>(),
+            new HashSet<string>(),
+            1));
+
+        Assert.False(status.Active);
+        Assert.Contains("tmdb", status.DormantReason, StringComparison.Ordinal);
+        Assert.DoesNotContain("Restart", status.DormantReason, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void LoadExternalSkipsDisabledAndUnmetPlugins()
+    {
+        var root = Directory.CreateDirectory(Path.Combine(Path.GetTempPath(), "moonfin-load-" + Guid.NewGuid().ToString("N")));
+        try
+        {
+            WritePlugin(root.FullName, "off", """{"id":"off","name":"Off","version":"1","description":"","provides":[],"requires":["messages"],"slots":["events"],"server":"OffModule","minHostApi":1}""");
+            WritePlugin(root.FullName, "need", """{"id":"need","name":"Need","version":"1","description":"","provides":[],"requires":["tmdb"],"slots":["events"],"server":"NeedModule","minHostApi":1}""");
+            WritePlugin(root.FullName, "ready", """{"id":"ready","name":"Ready","version":"1","description":"","provides":[],"requires":["messages"],"slots":["events"],"server":"ReadyModule","minHostApi":1}""");
+            File.WriteAllText(
+                Path.Combine(root.FullName, "_state.json"),
+                """{"disabled":["off"]}""");
+
+            var catalog = new MoonbaseModuleCatalog();
+            catalog.EnsureExternalLoaded(root.FullName);
+
+            Assert.Contains("ready", catalog.FailedIds());
+            Assert.DoesNotContain("off", catalog.FailedIds());
+            Assert.DoesNotContain("need", catalog.FailedIds());
+            Assert.False(catalog.ShouldRegisterServices("ready"));
+            Assert.False(catalog.ShouldRegisterServices("off"));
+            Assert.False(catalog.ShouldRegisterServices("need"));
+            Assert.DoesNotContain(catalog.Modules, module => module.Id is "off" or "need" or "ready");
+        }
+        finally
+        {
+            Directory.Delete(root.FullName, recursive: true);
+        }
+    }
+
+    private static void WritePlugin(string root, string id, string json)
+    {
+        var dir = Directory.CreateDirectory(Path.Combine(root, id));
+        File.WriteAllText(Path.Combine(dir.FullName, "plugin.json"), json);
+    }
+
+    private static PluginManifest Must(string json)
+    {
+        var manifest = PluginManifest.TryParse(json, out var error);
+        Assert.Null(error);
+        Assert.NotNull(manifest);
+        return manifest;
+    }
+}
+
+public class PluginDataQuotaTests
+{
+    [Fact]
+    public void TheTwoHundredFirstKeyAndFiveMegabytesAreRejected()
+    {
+        var dir = Directory.CreateDirectory(Path.Combine(Path.GetTempPath(), "moonfin-data-" + Guid.NewGuid().ToString("N")));
+        try
+        {
+            for (var i = 0; i < PluginDataQuota.MaxKeys; i++)
+            {
+                File.WriteAllText(Path.Combine(dir.FullName, "k" + i + ".json"), "{}");
+            }
+
+            Assert.False(PluginDataQuota.TryAccept(dir.FullName, "extra", 2, out var keyError));
+            Assert.Contains("200", keyError, StringComparison.Ordinal);
+            Assert.True(PluginDataQuota.TryAccept(dir.FullName, "k0", 2, out _));
+
+            Directory.Delete(dir.FullName, recursive: true);
+            Directory.CreateDirectory(dir.FullName);
+            File.WriteAllText(Path.Combine(dir.FullName, "blob.json"), new string('x', 1024));
+            Assert.False(PluginDataQuota.TryAccept(dir.FullName, "blob", (int)PluginDataQuota.MaxBytes + 1, out var sizeError));
+            Assert.Contains("5 MB", sizeError, StringComparison.Ordinal);
+            Assert.True(PluginDataQuota.TryAccept(dir.FullName, "blob", 1024, out _));
+            Assert.False(PluginDataQuota.TryAccept(dir.FullName, "other", (int)PluginDataQuota.MaxBytes, out _));
+        }
+        finally
+        {
+            if (Directory.Exists(dir.FullName))
+            {
+                Directory.Delete(dir.FullName, recursive: true);
+            }
+        }
+    }
+}
+
+public class PluginRouteAccessTests
+{
+    [Fact]
+    public void DataAndProxyRequireAnActivePlugin()
+    {
+        Assert.False(PluginRouteAccess.CanUseData(enabled: true, active: false));
+        Assert.False(PluginRouteAccess.CanProxy(true, false, "user", isAdmin: true));
+        Assert.True(PluginRouteAccess.CanUseData(true, true));
+    }
+
+    [Fact]
+    public void ProxyAccessDefaultsToAdmin()
+    {
+        var omitted = PluginManifest.TryParse(
+            """{"id":"hello","name":"Hello","version":"1","description":"","provides":[],"slots":["events"],"minHostApi":1}""",
+            out var omittedError);
+        Assert.Null(omittedError);
+        Assert.Equal("admin", omitted!.ProxyAccess);
+        Assert.True(PluginRouteAccess.CanProxy(true, true, omitted.ProxyAccess, isAdmin: true));
+        Assert.False(PluginRouteAccess.CanProxy(true, true, omitted.ProxyAccess, isAdmin: false));
+
+        var users = PluginManifest.TryParse(
+            """{"id":"hello","name":"Hello","version":"1","description":"","provides":[],"slots":["events"],"proxyAccess":"user","minHostApi":1}""",
+            out var userError);
+        Assert.Null(userError);
+        Assert.Equal("user", users!.ProxyAccess);
+        Assert.True(PluginRouteAccess.CanProxy(true, true, users.ProxyAccess, isAdmin: false));
+
+        var bad = PluginManifest.TryParse(
+            """{"id":"hello","name":"Hello","version":"1","description":"","provides":[],"slots":["events"],"proxyAccess":"world","minHostApi":1}""",
+            out var badError);
+        Assert.Null(bad);
+        Assert.Contains("proxyAccess", badError, StringComparison.Ordinal);
+    }
+}
+
+public class PluginProxyInjectionTests
+{
+    [Fact]
+    public void AQuerySecretIsAppendedAndCannotBeOverridden()
+    {
+        Assert.True(PluginProxy.TryBuildUpstream(
+            "https://api.themoviedb.org/3/",
+            "movie/1",
+            new Dictionary<string, string> { ["language"] = "en", ["api_key"] = "from-the-client" },
+            out var upstream,
+            out _));
+
+        Assert.True(PluginProxy.TryAppendQuerySecret(upstream!, "api_key", "server-secret", out var signed, out var error));
+        Assert.Null(error);
+        Assert.Contains("language=en", signed!.Query, StringComparison.Ordinal);
+        Assert.Contains("api_key=server-secret", signed.Query, StringComparison.Ordinal);
+        Assert.DoesNotContain("from-the-client", signed.Query, StringComparison.Ordinal);
+        Assert.DoesNotContain("server-secret", error ?? string.Empty, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void AnInvalidQueryNameDoesNotEchoTheSecret()
+    {
+        Assert.False(PluginProxy.TryAppendQuerySecret(new Uri("https://api.themoviedb.org/3/movie/1"), "../key", "super-secret-value", out _, out var error));
+        Assert.DoesNotContain("super-secret-value", error, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void NonJsonNonImageResponsesArePlainText()
+    {
+        var html = PluginProxy.PresentUpstream("text/html; charset=utf-8");
+        Assert.Equal("text/plain; charset=utf-8", html.ContentType);
+        Assert.True(html.Nosniff);
+
+        var json = PluginProxy.PresentUpstream("application/json; charset=utf-8");
+        Assert.Equal("application/json; charset=utf-8", json.ContentType);
+        Assert.False(json.Nosniff);
+
+        var image = PluginProxy.PresentUpstream("image/jpeg");
+        Assert.Equal("image/jpeg", image.ContentType);
+        Assert.False(image.Nosniff);
+
+        var problem = PluginProxy.PresentUpstream("application/problem+json");
+        Assert.False(problem.Nosniff);
+    }
+}
+
+public class PluginZipAsyncInstallTests
+{
+    [Fact]
+    public async Task ANonSeekableUploadIsReadAsynchronously()
+    {
+        var root = Directory.CreateDirectory(Path.Combine(Path.GetTempPath(), "moonfin-async-" + Guid.NewGuid().ToString("N")));
+        try
+        {
+            await using var zip = MakeZip(("plugin.json", PluginJson()), ("client/index.html", "<p>async</p>"));
+            var result = await PluginZipInstaller.InstallAsync(new NonSeekableStream(zip.ToArray()), root.FullName);
+            Assert.True(result.Ok, result.Error);
+            Assert.Contains("async", File.ReadAllText(Path.Combine(root.FullName, "hello", "client", "index.html")), StringComparison.Ordinal);
+        }
+        finally
+        {
+            Directory.Delete(root.FullName, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task AFailedReadDoesNotEscapeTheTry()
+    {
+        var root = Directory.CreateDirectory(Path.Combine(Path.GetTempPath(), "moonfin-async-" + Guid.NewGuid().ToString("N")));
+        try
+        {
+            var result = await PluginZipInstaller.InstallAsync(new ThrowingStream(), root.FullName);
+            Assert.False(result.Ok);
+            Assert.Contains("could not be installed", result.Error, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            Directory.Delete(root.FullName, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task AnOversizedNonSeekableUploadIsRejected()
+    {
+        var root = Directory.CreateDirectory(Path.Combine(Path.GetTempPath(), "moonfin-async-" + Guid.NewGuid().ToString("N")));
+        try
+        {
+            var result = await PluginZipInstaller.InstallAsync(
+                new NonSeekableStream(new byte[64]),
+                root.FullName,
+                new PluginZipLimits { MaxZipBytes = 16 });
+            Assert.False(result.Ok);
+            Assert.Contains("too large", result.Error, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            Directory.Delete(root.FullName, recursive: true);
+        }
+    }
+
+    private static string PluginJson() =>
+        """
+        {"id":"hello","name":"Hello","version":"1.0.0","description":"Hi","provides":["hello.homeRow"],"requires":[],"slots":["homeRow"],"server":"HelloModule","minHostApi":1}
+        """;
+
+    private static MemoryStream MakeZip(params (string Name, string Text)[] entries)
+    {
+        var stream = new MemoryStream();
+        using (var archive = new ZipArchive(stream, ZipArchiveMode.Create, leaveOpen: true))
+        {
+            foreach (var (name, text) in entries)
+            {
+                var entry = archive.CreateEntry(name);
+                using var writer = new StreamWriter(entry.Open());
+                writer.Write(text);
+            }
+        }
+
+        stream.Position = 0;
+        return stream;
+    }
+
+    private sealed class NonSeekableStream : Stream
+    {
+        private readonly byte[] _data;
+        private int _pos;
+
+        public NonSeekableStream(byte[] data) => _data = data;
+
+        public override bool CanRead => true;
+
+        public override bool CanSeek => false;
+
+        public override bool CanWrite => false;
+
+        public override long Length => throw new NotSupportedException();
+
+        public override long Position
+        {
+            get => throw new NotSupportedException();
+            set => throw new NotSupportedException();
+        }
+
+        public override void Flush()
+        {
+        }
+
+        public override int Read(byte[] buffer, int offset, int count)
+        {
+            if (_pos >= _data.Length)
+            {
+                return 0;
+            }
+
+            var n = Math.Min(count, _data.Length - _pos);
+            Buffer.BlockCopy(_data, _pos, buffer, offset, n);
+            _pos += n;
+            return n;
+        }
+
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+
+        public override void SetLength(long value) => throw new NotSupportedException();
+
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+    }
+
+    private sealed class ThrowingStream : Stream
+    {
+        public override bool CanRead => true;
+
+        public override bool CanSeek => false;
+
+        public override bool CanWrite => false;
+
+        public override long Length => throw new NotSupportedException();
+
+        public override long Position
+        {
+            get => throw new NotSupportedException();
+            set => throw new NotSupportedException();
+        }
+
+        public override void Flush()
+        {
+        }
+
+        public override int Read(byte[] buffer, int offset, int count) => throw new IOException("boom");
+
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+
+        public override void SetLength(long value) => throw new NotSupportedException();
+
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+    }
+}
+
+public class PluginRegistryCacheTests
+{
+    [Fact]
+    public void TheListStaysCachedUntilStateOrConfigChanges()
+    {
+        var root = Directory.CreateDirectory(Path.Combine(Path.GetTempPath(), "moonfin-cache-" + Guid.NewGuid().ToString("N")));
+        try
+        {
+            var folder = Directory.CreateDirectory(Path.Combine(root.FullName, "hello"));
+            File.WriteAllText(
+                Path.Combine(folder.FullName, "plugin.json"),
+                """{"id":"hello","name":"Hello","version":"1","description":"","provides":[],"slots":["homeRow"],"minHostApi":1}""");
+
+            var registry = new MoonfinPluginRegistry(new MoonbaseModuleCatalog(), root.FullName);
+            var first = registry.List();
+            var second = registry.List();
+            Assert.Same(first, second);
+            Assert.True(Assert.Single(first).Enabled);
+
+            var services = new ServiceCollection().BuildServiceProvider();
+            var disabled = registry.SetEnabled("hello", false, services);
+            Assert.NotNull(disabled);
+            Assert.False(disabled!.Enabled);
+            var afterDisable = registry.List();
+            Assert.NotSame(first, afterDisable);
+
+            registry.SetEnabled("hello", true, services);
+            registry.WriteConfig("hello", """{"settings":{"label":"Hello"}}""");
+            var afterConfig = registry.List();
+            Assert.NotSame(afterDisable, afterConfig);
+
+            registry.Invalidate();
+            Assert.NotSame(afterConfig, registry.List());
+
+            Assert.True(registry.TryDelete("hello", out _));
+            Assert.Empty(registry.List());
+        }
+        finally
+        {
+            Directory.Delete(root.FullName, recursive: true);
+        }
+    }
+}
+
+public class PluginEventTests
+{
+    [Fact]
+    public void BuiltInTypesAreBlockedAndPluginEventsArePrefixed()
+    {
+        Assert.Null(MoonbaseEventTypes.WireType("hello", "settingsUpdated"));
+        Assert.Null(MoonbaseEventTypes.WireType("hello", "themesChanged"));
+        Assert.Null(MoonbaseEventTypes.WireType("hello", "messagesChanged"));
+        Assert.Equal("plugin:hello:custom", MoonbaseEventTypes.WireType("hello", "custom"));
+        Assert.Equal("plugin:hello:pluginState", MoonbaseEventTypes.WireType("hello", "pluginState"));
+    }
+
+    [Fact]
+    public void ATargetUserIsTheOnlyRecipient()
+    {
+        var root = Directory.CreateDirectory(Path.Combine(Path.GetTempPath(), "moonfin-events-" + Guid.NewGuid().ToString("N")));
+        try
+        {
+            var settings = new MoonfinSettingsService(NullLogger<MoonfinSettingsService>.Instance, root.FullName);
+            var events = new MoonbaseEvents(settings);
+            var user = Guid.NewGuid();
+            var other = Guid.NewGuid();
+            var mine = settings.RegisterSseChannel(user);
+            var theirs = settings.RegisterSseChannel(other);
+
+            events.Emit("hello", "settingsUpdated", new { n = 1 }, user);
+            events.Emit("hello", "themesChanged");
+            events.Emit("hello", "messagesChanged", null, other);
+            Assert.False(mine.Reader.TryRead(out _));
+            Assert.False(theirs.Reader.TryRead(out _));
+
+            events.Emit("hello", "custom", new { ok = true }, user);
+            Assert.True(mine.Reader.TryRead(out var delivered));
+            Assert.Contains("\"type\":\"plugin:hello:custom\"", delivered, StringComparison.Ordinal);
+            Assert.Contains("\"pluginId\":\"hello\"", delivered, StringComparison.Ordinal);
+            Assert.False(theirs.Reader.TryRead(out _));
+
+            events.Emit("hello", "pluginState");
+            Assert.True(mine.Reader.TryRead(out var broadcastMine));
+            Assert.True(theirs.Reader.TryRead(out var broadcastTheirs));
+            Assert.Contains("plugin:hello:pluginState", broadcastMine, StringComparison.Ordinal);
+            Assert.Contains("plugin:hello:pluginState", broadcastTheirs, StringComparison.Ordinal);
+        }
+        finally
+        {
+            Directory.Delete(root.FullName, recursive: true);
+        }
     }
 }

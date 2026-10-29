@@ -548,7 +548,8 @@ public class MoonfinSettingsService
     }
 
     // MOFIN-PLUGIN-HOOK: plugins emit events on the existing settings stream.
-    public int BroadcastPluginEvent(string jsonPayload)
+    // A target userId delivers to that user only; null broadcasts.
+    public int BroadcastPluginEvent(string jsonPayload, Guid? userId = null)
     {
         if (string.IsNullOrWhiteSpace(jsonPayload))
         {
@@ -559,6 +560,11 @@ public class MoonfinSettingsService
         if (!trimmed.StartsWith('{') || !trimmed.EndsWith('}'))
         {
             return 0;
+        }
+
+        if (userId.HasValue)
+        {
+            return NotifyUser(userId.Value, trimmed);
         }
 
         var sent = 0;

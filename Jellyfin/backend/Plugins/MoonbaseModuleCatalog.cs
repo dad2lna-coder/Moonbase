@@ -17,6 +17,7 @@ public sealed class MoonbaseModuleCatalog
     private readonly Dictionary<string, PluginRouteHandler> _routes = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _failed = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _started = new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> _register = new(StringComparer.OrdinalIgnoreCase);
     private readonly List<string> _notes = new();
     private readonly object _gate = new();
     private string? _loadedRoot;
@@ -98,6 +99,14 @@ public sealed class MoonbaseModuleCatalog
         lock (_gate)
         {
             return new HashSet<string>(_failed, StringComparer.OrdinalIgnoreCase);
+        }
+    }
+
+    public bool ShouldRegisterServices(string id)
+    {
+        lock (_gate)
+        {
+            return _register.Contains(id);
         }
     }
 
@@ -194,7 +203,7 @@ public sealed class MoonbaseModuleCatalog
                 continue;
             }
 
-            TryAdd(type, expectedId: null);
+            TryAdd(type, expectedId: null, registerServices: true);
         }
     }
 
@@ -208,6 +217,7 @@ public sealed class MoonbaseModuleCatalog
             return;
         }
 
+        var discovered = new List<(PluginManifest Manifest, string Directory)>();
         foreach (var dir in Directory.EnumerateDirectories(full))
         {
             var folder = Path.GetFileName(dir);
@@ -243,6 +253,23 @@ public sealed class MoonbaseModuleCatalog
                 continue;
             }
 
+            discovered.Add((manifest, dir));
+        }
+
+        var host = PluginCapabilityResolver.HostCapabilities(MoonfinPlugin.Instance?.Configuration);
+        var loadIds = PluginCapabilityResolver.SelectServerLoadIds(
+            discovered.Select(item => item.Manifest).ToList(),
+            MoonfinPluginRegistry.ReadDisabled(full),
+            host,
+            MoonbasePlugins.HostApi);
+        var load = new HashSet<string>(loadIds, StringComparer.OrdinalIgnoreCase);
+        foreach (var (manifest, dir) in discovered)
+        {
+            if (!load.Contains(manifest.Id))
+            {
+                continue;
+            }
+
             if (!TryLoadModule(dir, manifest))
             {
                 lock (_gate)
@@ -275,7 +302,7 @@ public sealed class MoonbaseModuleCatalog
                     continue;
                 }
 
-                if (TryAdd(type, manifest.Id))
+                if (TryAdd(type, manifest.Id, registerServices: true))
                 {
                     return true;
                 }
@@ -286,7 +313,7 @@ public sealed class MoonbaseModuleCatalog
         return false;
     }
 
-    private bool TryAdd(Type type, string? expectedId)
+    private bool TryAdd(Type type, string? expectedId, bool registerServices)
     {
         IMoonbaseModule module;
         try
@@ -329,6 +356,10 @@ public sealed class MoonbaseModuleCatalog
 
             _modules.Add(module);
             _failed.Remove(module.Id);
+            if (registerServices)
+            {
+                _register.Add(module.Id);
+            }
         }
 
         return true;

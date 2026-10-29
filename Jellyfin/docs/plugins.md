@@ -20,7 +20,7 @@ Typical data roots:
 | Install | Path |
 | --- | --- |
 | Linux | `/var/lib/jellyfin/plugins/configurations/Moonfin/moonfin-plugins/` |
-| Docker | `/config/plugins/configurations/Moonfin/moonfin-plugins/` |
+| Docker (linuxserver) | `/config/data/plugins/configurations/Moonfin/moonfin-plugins/` |
 | Windows | `%ProgramData%\Jellyfin\Server\plugins\configurations\Moonfin\moonfin-plugins\` |
 
 ## Manifest (`plugin.json`)
@@ -36,7 +36,8 @@ Same model as the Moonfin client host, plus the server half and the web entry.
 | `slots` | `homeRow`, `playback`, `settings`, `events`. |
 | `client.html`, `client.js` | Optional WebView files, served under `/Moonfin/Plugins/{id}/files/`. |
 | `server` | Optional type name of the `IMoonbaseModule` in the server dll. |
-| `minHostApi` | Must be `1` on this Moonbase. A higher value stays dormant. |
+| `minHostApi` | Must be `1` on this Moonbase. A higher value stays dormant and its DLL is not loaded. |
+| `proxyAccess` | `admin` (default) or `user`. Who may call `POST /Moonfin/Plugins/{id}/Proxy`. |
 
 A client-only plugin (no `server`) can be active and can fill a slot, but it cannot turn a capability flag on.
 
@@ -62,11 +63,11 @@ public interface IMoonbaseModule
 }
 ```
 
-`PluginServiceRegistrator` discovers modules and calls `RegisterServices` on each one. Put the dll in `server/`. It must be named by `server` (simple type name or namespace-qualified name). Reference `Moonfin.Server` and do not ship that dll or Jellyfin's assemblies inside the zip. `RegisterServices` runs at Jellyfin startup, so a newly uploaded dll is not in the container until restart.
+`PluginServiceRegistrator` discovers modules and calls `RegisterServices` only for plugins that are enabled and whose `requires` are already met by the host or by another enabled plugin's declared provides. A disabled plugin's DLL is not loaded on the next Jellyfin restart. Put the dll in `server/`. It must be named by `server` (simple type name or namespace-qualified name). Reference `Moonfin.Server` and do not ship that dll or Jellyfin's assemblies inside the zip. `RegisterServices` runs at Jellyfin startup, so a newly uploaded dll is not in the container until restart.
 
 Routes map under `/Moonfin/Plugins/{id}/`. Do not use `files`, `Data`, or `Proxy` — Moonbase owns those.
 
-`IMoonbaseEvents.Emit(pluginId, type, payload)` writes to the existing `GET /Moonfin/Settings/Stream`. Types: `settingsUpdated`, `messagesChanged`, `pluginState`, `custom`.
+`IMoonbaseEvents.Emit(pluginId, type, payload, userId)` writes to the existing `GET /Moonfin/Settings/Stream`. Plugins cannot emit the built-in types `settingsUpdated`, `themesChanged`, or `messagesChanged`. Every accepted event is sent as `plugin:{id}:{type}` (for example `plugin:hello:custom`). Pass a user id to deliver it to that user; omit it to broadcast.
 
 ## Routes
 
@@ -74,8 +75,8 @@ Routes map under `/Moonfin/Plugins/{id}/`. Do not use `files`, `Data`, or `Proxy
 | --- | --- | --- |
 | GET | `/Moonfin/Plugins` | Signed-in user. Plugins (`enabled`, `active`, `dormantReason`, `provides`, `slots`, `clientEntryUrl`, `version`) and the capability map. |
 | GET | `/Moonfin/Plugins/{id}/files/{path}` | Client files. `config.json`, `data/`, and dlls are not served. |
-| GET/PUT/DELETE | `/Moonfin/Plugins/{id}/Data/{key}` | Per-user JSON. Key is a single token. |
-| POST | `/Moonfin/Plugins/{id}/Proxy` | Allowlisted upstream. Moonbase adds the secret. |
+| GET/PUT/DELETE | `/Moonfin/Plugins/{id}/Data/{key}` | Signed-in user. The plugin must be active. Per-user JSON, one token key. 200 keys and 5 MB per user; over that returns 413. |
+| POST | `/Moonfin/Plugins/{id}/Proxy` | The plugin must be active. Administrators only, unless `proxyAccess` is `user`. Allowlisted upstream. Moonbase adds the secret. |
 | GET/POST/PUT/DELETE | `/Moonfin/Plugins/{id}/{path}` | Routes the active module mapped. Dormant modules return 409. |
 | POST | `/Moonfin/Admin/Plugins/Install` | Admin zip upload. |
 | POST | `/Moonfin/Admin/Plugins/{id}/Enable` | Admin. |
@@ -89,7 +90,7 @@ Routes map under `/Moonfin/Plugins/{id}/`. Do not use `files`, `Data`, or `Proxy
 
 1. Disabled plugins are inactive. `dormantReason` is null.
 2. Enabled plugins with unmet `requires` are dormant. The registry still returns them.
-3. A declared server module that is not loaded yet is dormant until Jellyfin restarts.
+3. A declared server module is loaded on startup only when the plugin is enabled and its requires are met. Otherwise the DLL stays unloaded. If it is allowed to load but the process has not restarted since install, it stays dormant until Jellyfin restarts.
 4. A flag is turned on only when the plugin is active **and** the loaded module's `Provides` contains that flag **and** `plugin.json` lists it too.
 5. Plugins do not flip existing ping fields such as `tmdbAvailable`.
 
@@ -105,9 +106,17 @@ Routes map under `/Moonfin/Plugins/{id}/`. Do not use `files`, `Data`, or `Proxy
     {
       "name": "example",
       "baseUrl": "https://api.example.com/v1/",
+      "inject": "header",
       "header": "Authorization",
       "scheme": "Bearer",
       "secret": "apiKey"
+    },
+    {
+      "name": "tmdb",
+      "baseUrl": "https://api.themoviedb.org/3/",
+      "inject": "query",
+      "param": "api_key",
+      "secret": "tmdbKey"
     }
   ]
 }
@@ -121,7 +130,7 @@ Proxy body:
 { "name": "example", "path": "items", "method": "GET", "query": { "q": "hi" } }
 ```
 
-`path` is relative to `baseUrl`. `..`, other hosts, and redirects are rejected. The secret is injected as a header and stripped from the upstream body if it echoes.
+`path` is relative to `baseUrl`. `..`, other hosts, and redirects are rejected. `inject` is `header` (the default, using `header` and optional `scheme`) or `query` (using `param`, for a TMDB-style `?api_key=`). The secret is added by Moonbase and stripped from the upstream body if it echoes. The caller cannot override that query parameter. Upstream responses that are not JSON (`application/json` or `+json`) or an image are returned as `text/plain` with `X-Content-Type-Options: nosniff`.
 
 ## Packaging a client + server pair
 

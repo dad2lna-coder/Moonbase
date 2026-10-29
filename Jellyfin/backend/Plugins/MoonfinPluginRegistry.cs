@@ -9,17 +9,30 @@ namespace Moonfin.Server.Plugins;
 public sealed class MoonfinPluginRegistry
 {
     private readonly MoonbaseModuleCatalog _catalog;
+    private readonly string? _rootOverride;
     private readonly object _gate = new();
+    private IReadOnlyList<PluginCapabilityResolver.PluginStatus>? _listCache;
 
     public MoonfinPluginRegistry(MoonbaseModuleCatalog catalog)
+        : this(catalog, null)
+    {
+    }
+
+    internal MoonfinPluginRegistry(MoonbaseModuleCatalog catalog, string? pluginsRoot)
     {
         _catalog = catalog;
+        _rootOverride = pluginsRoot;
     }
 
     public string Root
     {
         get
         {
+            if (!string.IsNullOrWhiteSpace(_rootOverride))
+            {
+                return _rootOverride;
+            }
+
             if (!string.IsNullOrWhiteSpace(_catalog.PluginsRoot))
             {
                 return _catalog.PluginsRoot;
@@ -29,20 +42,37 @@ public sealed class MoonfinPluginRegistry
         }
     }
 
+    public void Invalidate()
+    {
+        lock (_gate)
+        {
+            _listCache = null;
+        }
+    }
+
     public IReadOnlyList<PluginCapabilityResolver.PluginStatus> List()
     {
-        var root = Root;
-        _catalog.EnsureExternalLoaded(root);
-        var manifests = ReadManifests(root);
-        var disabled = ReadDisabled(root);
-        var host = PluginCapabilityResolver.HostCapabilities(MoonfinPlugin.Instance?.Configuration);
-        return PluginCapabilityResolver.Resolve(
-            manifests,
-            _catalog.ServerProvides(),
-            _catalog.FailedIds(),
-            disabled,
-            host,
-            MoonbasePlugins.HostApi);
+        lock (_gate)
+        {
+            if (_listCache != null)
+            {
+                return _listCache;
+            }
+
+            var root = Root;
+            _catalog.EnsureExternalLoaded(root);
+            var manifests = ReadManifests(root);
+            var disabled = ReadDisabled(root);
+            var host = PluginCapabilityResolver.HostCapabilities(MoonfinPlugin.Instance?.Configuration);
+            _listCache = PluginCapabilityResolver.Resolve(
+                manifests,
+                _catalog.ServerProvides(),
+                _catalog.FailedIds(),
+                disabled,
+                host,
+                MoonbasePlugins.HostApi);
+            return _listCache;
+        }
     }
 
     public Dictionary<string, bool> PingFlags() => PluginCapabilityResolver.ToPingFlags(List());
@@ -74,6 +104,7 @@ public sealed class MoonfinPluginRegistry
             }
 
             WriteDisabled(Root, disabled);
+            _listCache = null;
         }
 
         var status = Find(id);
@@ -135,6 +166,8 @@ public sealed class MoonfinPluginRegistry
             {
                 WriteDisabled(root, disabled);
             }
+
+            _listCache = null;
         }
 
         return true;
@@ -150,6 +183,7 @@ public sealed class MoonfinPluginRegistry
     {
         var path = ConfigPath(id) ?? throw new InvalidOperationException("Unknown plugin.");
         PluginConfigStore.Write(path, json);
+        Invalidate();
     }
 
     public string DataPath(string id, Guid userId, string key)
@@ -214,7 +248,7 @@ public sealed class MoonfinPluginRegistry
         return list;
     }
 
-    private static HashSet<string> ReadDisabled(string root)
+    public static HashSet<string> ReadDisabled(string root)
     {
         var set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var path = Path.Combine(root, MoonbasePlugins.StateFileName);
@@ -262,5 +296,58 @@ public sealed class MoonfinPluginRegistry
     private sealed class PluginStateFile
     {
         public List<string> Disabled { get; set; } = new();
+    }
+}
+
+/// <summary>Per-user plugin data caps: 200 keys and 5 MB for one plugin.</summary>
+public static class PluginDataQuota
+{
+    public const int MaxKeys = 200;
+
+    public const long MaxBytes = 5L * 1024 * 1024;
+
+    public static bool TryAccept(string userDirectory, string key, int incomingBytes, out string? error)
+    {
+        error = null;
+        if (incomingBytes < 0)
+        {
+            error = "Value is too large.";
+            return false;
+        }
+
+        var fileName = key + ".json";
+        long total = 0;
+        var keys = 0;
+        long existing = 0;
+        var replacing = false;
+        if (Directory.Exists(userDirectory))
+        {
+            foreach (var file in Directory.EnumerateFiles(userDirectory, "*.json"))
+            {
+                var info = new FileInfo(file);
+                keys++;
+                total += info.Length;
+                if (string.Equals(info.Name, fileName, StringComparison.Ordinal))
+                {
+                    replacing = true;
+                    existing = info.Length;
+                }
+            }
+        }
+
+        if (!replacing && keys >= MaxKeys)
+        {
+            error = "This plugin already has " + MaxKeys + " stored values for you.";
+            return false;
+        }
+
+        var projected = total - existing + incomingBytes;
+        if (projected > MaxBytes)
+        {
+            error = "Plugin data is limited to 5 MB per user.";
+            return false;
+        }
+
+        return true;
     }
 }

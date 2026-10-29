@@ -59,6 +59,10 @@ public sealed class PluginManifest
     [JsonPropertyName("minHostApi")]
     public int MinHostApi { get; set; } = MoonbasePlugins.HostApi;
 
+    /// <summary><c>admin</c> (default) or <c>user</c>. Who may call this plugin's proxy.</summary>
+    [JsonPropertyName("proxyAccess")]
+    public string ProxyAccess { get; set; } = "admin";
+
     public static bool IsValidId(string? id) =>
         !string.IsNullOrEmpty(id) && IdPattern.IsMatch(id);
 
@@ -113,6 +117,17 @@ public sealed class PluginManifest
             error = "minHostApi must be 1 or greater.";
             return null;
         }
+
+        var access = string.IsNullOrWhiteSpace(manifest.ProxyAccess)
+            ? "admin"
+            : manifest.ProxyAccess.Trim().ToLowerInvariant();
+        if (access != "admin" && access != "user")
+        {
+            error = "proxyAccess must be \"admin\" or \"user\".";
+            return null;
+        }
+
+        manifest.ProxyAccess = access;
 
         manifest.Provides = CleanTokens(manifest.Provides);
         manifest.Requires = CleanTokens(manifest.Requires);

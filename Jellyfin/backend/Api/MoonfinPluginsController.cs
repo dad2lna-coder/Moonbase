@@ -84,7 +84,7 @@ public class MoonfinPluginsController : ControllerBase
     [Authorize]
     public IActionResult GetData(string id, string key)
     {
-        if (!TryEnabled(id, out var error))
+        if (!TryActive(id, out var error))
         {
             return error!;
         }
@@ -117,7 +117,7 @@ public class MoonfinPluginsController : ControllerBase
     [Authorize]
     public async Task<IActionResult> PutData(string id, string key, CancellationToken cancellationToken)
     {
-        if (!TryEnabled(id, out var error))
+        if (!TryActive(id, out var error))
         {
             return error!;
         }
@@ -153,6 +153,11 @@ public class MoonfinPluginsController : ControllerBase
             return BadRequest(new { error = "Value must be JSON." });
         }
 
+        if (!PluginDataQuota.TryAccept(Path.GetDirectoryName(path)!, key, Encoding.UTF8.GetByteCount(body), out var quotaError))
+        {
+            return StatusCode(StatusCodes.Status413PayloadTooLarge, new { error = quotaError });
+        }
+
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
         await System.IO.File.WriteAllTextAsync(path, body, cancellationToken).ConfigureAwait(false);
         return NoContent();
@@ -162,7 +167,7 @@ public class MoonfinPluginsController : ControllerBase
     [Authorize]
     public IActionResult DeleteData(string id, string key)
     {
-        if (!TryEnabled(id, out var error))
+        if (!TryActive(id, out var error))
         {
             return error!;
         }
@@ -195,9 +200,15 @@ public class MoonfinPluginsController : ControllerBase
     [Authorize]
     public async Task<IActionResult> Proxy(string id, CancellationToken cancellationToken)
     {
-        if (!TryEnabled(id, out var error))
+        if (!TryActive(id, out var error))
         {
             return error!;
+        }
+
+        var status = _registry.Find(id);
+        if (status == null || !PluginRouteAccess.CanProxy(status.Enabled, status.Active, status.Manifest.ProxyAccess, this.IsAdminFromClaims()))
+        {
+            return StatusCode(StatusCodes.Status403Forbidden, new { error = "Plugin proxy is limited to administrators." });
         }
 
         var body = await ReadBody(cancellationToken).ConfigureAwait(false);
@@ -218,6 +229,11 @@ public class MoonfinPluginsController : ControllerBase
 
         var result = await PluginProxy.SendAsync(_registry.ReadConfig(id), request ?? new PluginProxyRequestBody(), cancellationToken)
             .ConfigureAwait(false);
+        if (result.Nosniff)
+        {
+            Response.Headers["X-Content-Type-Options"] = "nosniff";
+        }
+
         return new ContentResult
         {
             StatusCode = result.StatusCode,
@@ -287,24 +303,27 @@ public class MoonfinPluginsController : ControllerBase
     public async Task<IActionResult> Install(IFormFile? file, CancellationToken cancellationToken)
     {
         Stream? stream = file?.OpenReadStream();
-        if (stream == null && Request.ContentLength.GetValueOrDefault() > 0)
+        var ownsStream = stream != null;
+        if (stream == null)
         {
+            if (Request.ContentLength == 0)
+            {
+                return BadRequest(new { error = "Upload a plugin zip." });
+            }
+
             stream = Request.Body;
         }
 
-        if (stream == null)
+        try
         {
-            return BadRequest(new { error = "Upload a plugin zip." });
-        }
-
-        await using (stream.ConfigureAwait(false))
-        {
-            var result = PluginZipInstaller.Install(stream, _registry.Root);
+            var result = await PluginZipInstaller.InstallAsync(stream, _registry.Root, cancellationToken: cancellationToken)
+                .ConfigureAwait(false);
             if (!result.Ok)
             {
                 return BadRequest(new { error = result.Error });
             }
 
+            _registry.Invalidate();
             var status = _registry.Find(result.Id!);
             return Ok(new
             {
@@ -314,6 +333,17 @@ public class MoonfinPluginsController : ControllerBase
                 active = status?.Active ?? false,
                 dormantReason = status?.DormantReason,
             });
+        }
+        catch (Exception)
+        {
+            return BadRequest(new { error = "The plugin could not be installed." });
+        }
+        finally
+        {
+            if (ownsStream)
+            {
+                await stream.DisposeAsync().ConfigureAwait(false);
+            }
         }
     }
 
@@ -401,12 +431,18 @@ public class MoonfinPluginsController : ControllerBase
         return Directory.Exists(dir) && System.IO.File.Exists(Path.Combine(dir, "plugin.json"));
     }
 
-    private bool TryEnabled(string id, out IActionResult? error)
+    private bool TryActive(string id, out IActionResult? error)
     {
         var status = _registry.Find(id);
         if (status == null || !status.Enabled)
         {
             error = NotFound(new { error = "Unknown plugin." });
+            return false;
+        }
+
+        if (!PluginRouteAccess.CanUseData(status.Enabled, status.Active))
+        {
+            error = Conflict(new { error = "Plugin is dormant.", dormantReason = status.DormantReason });
             return false;
         }
 
@@ -489,6 +525,7 @@ public class MoonfinPluginsController : ControllerBase
             Requires = status.Manifest.Requires,
             Slots = status.Manifest.Slots,
             ClientEntryUrl = status.Manifest.ClientEntryUrl(),
+            ProxyAccess = status.Manifest.ProxyAccess,
         };
 }
 
@@ -538,4 +575,23 @@ public sealed class PluginListItem
 
     [JsonPropertyName("clientEntryUrl")]
     public string? ClientEntryUrl { get; set; }
+
+    [JsonPropertyName("proxyAccess")]
+    public string ProxyAccess { get; set; } = "admin";
+}
+
+/// <summary>Data and proxy are only for an active plugin. Proxy defaults to administrators.</summary>
+public static class PluginRouteAccess
+{
+    public static bool CanUseData(bool enabled, bool active) => enabled && active;
+
+    public static bool CanProxy(bool enabled, bool active, string? proxyAccess, bool isAdmin)
+    {
+        if (!CanUseData(enabled, active))
+        {
+            return false;
+        }
+
+        return isAdmin || string.Equals(proxyAccess, "user", StringComparison.Ordinal);
+    }
 }

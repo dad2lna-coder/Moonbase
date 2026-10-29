@@ -57,6 +57,64 @@ public static class PluginCapabilityResolver
         return set;
     }
 
+    /// <summary>
+    /// Server DLLs to load, dependency order. Disabled plugins are left out.
+    /// A plugin is included only when every required flag is already available
+    /// from the host or from an earlier plugin's declared provides.
+    /// </summary>
+    public static IReadOnlyList<string> SelectServerLoadIds(
+        IReadOnlyList<PluginManifest> manifests,
+        IReadOnlySet<string> disabled,
+        IReadOnlySet<string> hostCapabilities,
+        int hostApi)
+    {
+        var pending = new List<PluginManifest>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var manifest in manifests)
+        {
+            if (manifest == null || string.IsNullOrEmpty(manifest.Server) || !seen.Add(manifest.Id))
+            {
+                continue;
+            }
+
+            if (disabled.Contains(manifest.Id) || manifest.MinHostApi > hostApi)
+            {
+                continue;
+            }
+
+            pending.Add(manifest);
+        }
+
+        var available = new HashSet<string>(hostCapabilities, StringComparer.Ordinal);
+        var selected = new List<string>();
+        bool progressed;
+        do
+        {
+            progressed = false;
+            for (var i = 0; i < pending.Count;)
+            {
+                var manifest = pending[i];
+                if (manifest.Requires.Any(flag => !available.Contains(flag)))
+                {
+                    i++;
+                    continue;
+                }
+
+                pending.RemoveAt(i);
+                selected.Add(manifest.Id);
+                foreach (var flag in manifest.Provides)
+                {
+                    available.Add(flag);
+                }
+
+                progressed = true;
+            }
+        }
+        while (progressed);
+
+        return selected;
+    }
+
     public static IReadOnlyList<PluginStatus> Resolve(
         IReadOnlyList<PluginManifest> manifests,
         IReadOnlyDictionary<string, IReadOnlyCollection<string>> serverProvides,
@@ -111,7 +169,7 @@ public static class PluginCapabilityResolver
             }
             else if (serverDeclared && !loaded)
             {
-                blocked = "Restart Jellyfin to load the server module.";
+                // Requires are checked below. Restart is only the reason when those are already met.
                 canActivate = false;
             }
 
@@ -173,9 +231,11 @@ public static class PluginCapabilityResolver
                         .Distinct(StringComparer.Ordinal)
                         .OrderBy(flag => flag, StringComparer.Ordinal)
                         .ToList();
-                    reason = missing.Count == 0
-                        ? "Requirements are not met."
-                        : "Missing required capabilities: " + string.Join(", ", missing) + ".";
+                    reason = missing.Count > 0
+                        ? "Missing required capabilities: " + string.Join(", ", missing) + "."
+                        : !string.IsNullOrEmpty(item.Manifest.Server) && !item.ServerLoaded
+                            ? "Restart Jellyfin to load the server module."
+                            : "Requirements are not met.";
                 }
             }
 

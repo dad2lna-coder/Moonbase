@@ -22,6 +22,8 @@ public sealed class PluginProxyResult
     public string ContentType { get; init; } = "application/json; charset=utf-8";
 
     public string Body { get; init; } = string.Empty;
+
+    public bool Nosniff { get; init; }
 }
 
 /// <summary>
@@ -124,6 +126,70 @@ public static class PluginProxy
         return true;
     }
 
+    /// <summary>
+    /// JSON and images pass through. Everything else is forced to text/plain so a plugin proxy cannot serve active content.
+    /// </summary>
+    public static (string ContentType, bool Nosniff) PresentUpstream(string? mediaType)
+    {
+        var raw = mediaType?.Trim() ?? string.Empty;
+        var essence = raw.Split(';')[0].Trim();
+        if (essence.Equals("application/json", StringComparison.OrdinalIgnoreCase)
+            || essence.EndsWith("+json", StringComparison.OrdinalIgnoreCase)
+            || essence.StartsWith("image/", StringComparison.OrdinalIgnoreCase))
+        {
+            return (string.IsNullOrEmpty(raw) ? essence : raw, false);
+        }
+
+        return ("text/plain; charset=utf-8", true);
+    }
+
+    public static bool TryAppendQuerySecret(Uri upstream, string? param, string secret, out Uri? signed, out string? error)
+    {
+        signed = null;
+        error = null;
+        if (!PluginManifest.IsValidToken(param))
+        {
+            error = "The allowlisted query parameter is not valid.";
+            return false;
+        }
+
+        var existing = upstream.Query;
+        if (existing.StartsWith('?'))
+        {
+            existing = existing[1..];
+        }
+
+        var kept = new List<string>();
+        if (existing.Length > 0)
+        {
+            foreach (var pair in existing.Split('&', StringSplitOptions.RemoveEmptyEntries))
+            {
+                var eq = pair.IndexOf('=');
+                var rawKey = eq >= 0 ? pair[..eq] : pair;
+                string key;
+                try
+                {
+                    key = Uri.UnescapeDataString(rawKey);
+                }
+                catch (UriFormatException)
+                {
+                    key = rawKey;
+                }
+
+                if (string.Equals(key, param, StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
+                kept.Add(pair);
+            }
+        }
+
+        kept.Add(Uri.EscapeDataString(param!) + "=" + Uri.EscapeDataString(secret ?? string.Empty));
+        signed = new Uri(upstream.GetLeftPart(UriPartial.Path) + "?" + string.Join("&", kept));
+        return true;
+    }
+
     public static async Task<PluginProxyResult> SendAsync(
         string? storedConfig,
         PluginProxyRequestBody request,
@@ -146,7 +212,17 @@ public static class PluginProxy
             return Error(StatusCodes.Status404NotFound, "That proxy is not allowlisted.");
         }
 
-        if (!TryBuildUpstream(rule.BaseUrl, request.Path, request.Query, out var uri, out _))
+        var inject = string.IsNullOrWhiteSpace(rule.Inject) ? "header" : rule.Inject.Trim();
+        var query = request.Query;
+        if (inject.Equals("query", StringComparison.OrdinalIgnoreCase)
+            && !string.IsNullOrWhiteSpace(rule.Param)
+            && query is { Count: > 0 })
+        {
+            query = new Dictionary<string, string>(query, StringComparer.Ordinal);
+            query.Remove(rule.Param);
+        }
+
+        if (!TryBuildUpstream(rule.BaseUrl, request.Path, query, out var uri, out _))
         {
             return Error(StatusCodes.Status400BadRequest, "That path is not allowed.");
         }
@@ -161,8 +237,29 @@ public static class PluginProxy
             }
         }
 
+        if (inject.Equals("query", StringComparison.OrdinalIgnoreCase))
+        {
+            if (string.IsNullOrEmpty(secret))
+            {
+                return Error(StatusCodes.Status409Conflict, "The allowlisted secret is not set.");
+            }
+
+            if (!TryAppendQuerySecret(uri!, rule.Param, secret, out var signed, out _))
+            {
+                return Error(StatusCodes.Status409Conflict, "The allowlisted query parameter is not valid.");
+            }
+
+            uri = signed;
+        }
+        else if (!inject.Equals("header", StringComparison.OrdinalIgnoreCase))
+        {
+            return Error(StatusCodes.Status409Conflict, "The allowlisted inject mode is not valid.");
+        }
+
         using var message = new HttpRequestMessage(new HttpMethod(method), uri);
-        if (!string.IsNullOrWhiteSpace(rule.Header) && !string.IsNullOrEmpty(secret))
+        if (inject.Equals("header", StringComparison.OrdinalIgnoreCase)
+            && !string.IsNullOrWhiteSpace(rule.Header)
+            && !string.IsNullOrEmpty(secret))
         {
             if (rule.Header.Contains('\r') || rule.Header.Contains('\n') || rule.Header.Contains(':'))
             {
@@ -200,12 +297,13 @@ public static class PluginProxy
                 body = body.Replace(secret, PluginConfigStore.RedactedMarker, StringComparison.Ordinal);
             }
 
-            var mediaType = response.Content.Headers.ContentType?.MediaType ?? "application/octet-stream";
+            var presented = PresentUpstream(response.Content.Headers.ContentType?.MediaType);
             return new PluginProxyResult
             {
                 StatusCode = (int)response.StatusCode,
-                ContentType = mediaType,
+                ContentType = presented.ContentType,
                 Body = body,
+                Nosniff = presented.Nosniff,
             };
         }
     }
@@ -238,8 +336,10 @@ public static class PluginProxy
             return new ProxyRule
             {
                 BaseUrl = AsString(rule["baseUrl"]),
+                Inject = AsString(rule["inject"]),
                 Header = AsString(rule["header"]),
                 Scheme = AsString(rule["scheme"]),
+                Param = AsString(rule["param"]),
                 Secret = AsString(rule["secret"]),
             };
         }
@@ -285,9 +385,13 @@ public static class PluginProxy
     {
         public string? BaseUrl { get; init; }
 
+        public string? Inject { get; init; }
+
         public string? Header { get; init; }
 
         public string? Scheme { get; init; }
+
+        public string? Param { get; init; }
 
         public string? Secret { get; init; }
     }

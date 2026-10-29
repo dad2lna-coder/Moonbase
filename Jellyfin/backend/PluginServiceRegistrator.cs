@@ -134,11 +134,16 @@ public class PluginServiceRegistrator : IPluginServiceRegistrator
         serviceCollection.AddSingleton<MoonfinSimilarItemsService>();
         serviceCollection.AddHostedService<MoonfinSimilarItemsProviderManager>();
 
-        // MOFIN-PLUGIN-HOOK: discover Moonbase modules and let each one register services.
+        // MOFIN-PLUGIN-HOOK: load and register only server modules that are enabled and whose requires are met.
         var moonbaseModules = MoonbaseModuleCatalog.Discover(serviceCollection, applicationHost);
         serviceCollection.AddSingleton(moonbaseModules);
         foreach (var module in moonbaseModules.Modules)
         {
+            if (!moonbaseModules.ShouldRegisterServices(module.Id))
+            {
+                continue;
+            }
+
             try
             {
                 module.RegisterServices(serviceCollection);
