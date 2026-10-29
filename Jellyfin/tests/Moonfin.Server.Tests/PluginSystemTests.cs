@@ -1,6 +1,8 @@
 using System.IO.Compression;
 using System.Reflection;
+using System.Text;
 using System.Text.Json;
+using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Moonfin.Server.Api;
@@ -698,18 +700,54 @@ public class PluginProxyInjectionTests
     {
         var html = PluginProxy.PresentUpstream("text/html; charset=utf-8");
         Assert.Equal("text/plain; charset=utf-8", html.ContentType);
-        Assert.True(html.Nosniff);
+        Assert.False(html.Binary);
 
         var json = PluginProxy.PresentUpstream("application/json; charset=utf-8");
         Assert.Equal("application/json; charset=utf-8", json.ContentType);
-        Assert.False(json.Nosniff);
+        Assert.False(json.Binary);
 
         var image = PluginProxy.PresentUpstream("image/jpeg");
         Assert.Equal("image/jpeg", image.ContentType);
-        Assert.False(image.Nosniff);
+        Assert.True(image.Binary);
 
         var problem = PluginProxy.PresentUpstream("application/problem+json");
-        Assert.False(problem.Nosniff);
+        Assert.Equal("application/problem+json", problem.ContentType);
+        Assert.False(problem.Binary);
+    }
+
+    [Fact]
+    public void SvgIsPlainTextAndEveryProxyResponseIsSandboxed()
+    {
+        var svg = PluginProxy.PresentUpstream("image/svg+xml; charset=utf-8");
+        Assert.Equal("text/plain; charset=utf-8", svg.ContentType);
+        Assert.False(svg.Binary);
+
+        var headers = new HeaderDictionary();
+        PluginProxy.ApplyResponseHeaders(headers);
+        Assert.Equal("nosniff", headers[PluginProxy.ContentTypeOptionsHeader]);
+        Assert.Equal("sandbox", headers[PluginProxy.ContentSecurityPolicyHeader]);
+    }
+
+    [Fact]
+    public void ImageBodiesStayBytesAndSecretsAreScrubbedOnlyFromText()
+    {
+        var secret = "super-secret-value";
+        var png = new byte[] { 0x89, 0x50, 0x4E, 0x47, 0xFF, 0x00 };
+        var raw = png.Concat(Encoding.ASCII.GetBytes(secret)).ToArray();
+        var image = PluginProxy.PresentBody("image/png", raw, secret);
+        Assert.Same(raw, image.RawBody);
+        Assert.Equal("image/png", image.ContentType);
+        Assert.Equal(string.Empty, image.Body);
+
+        var svg = PluginProxy.PresentBody("image/svg+xml", Encoding.UTF8.GetBytes("<svg>" + secret + "</svg>"), secret);
+        Assert.Null(svg.RawBody);
+        Assert.Equal("text/plain; charset=utf-8", svg.ContentType);
+        Assert.DoesNotContain(secret, svg.Body, StringComparison.Ordinal);
+        Assert.Contains(PluginConfigStore.RedactedMarker, svg.Body, StringComparison.Ordinal);
+
+        var json = PluginProxy.PresentBody("application/json", Encoding.UTF8.GetBytes("{\"k\":\"" + secret + "\"}"), secret);
+        Assert.Null(json.RawBody);
+        Assert.DoesNotContain(secret, json.Body, StringComparison.Ordinal);
     }
 }
 
@@ -900,6 +938,32 @@ public class PluginRegistryCacheTests
 
             Assert.True(registry.TryDelete("hello", out _));
             Assert.Empty(registry.List());
+        }
+        finally
+        {
+            Directory.Delete(root.FullName, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void ASettingsSaveDropsTheCachedPluginList()
+    {
+        var root = Directory.CreateDirectory(Path.Combine(Path.GetTempPath(), "moonfin-cache-" + Guid.NewGuid().ToString("N")));
+        try
+        {
+            var folder = Directory.CreateDirectory(Path.Combine(root.FullName, "hello"));
+            File.WriteAllText(
+                Path.Combine(folder.FullName, "plugin.json"),
+                """{"id":"hello","name":"Hello","version":"1","description":"","provides":[],"slots":["homeRow"],"minHostApi":1}""");
+
+            var registry = new MoonfinPluginRegistry(new MoonbaseModuleCatalog(), root.FullName);
+            var first = registry.List();
+            var services = new ServiceCollection();
+            services.AddSingleton(registry);
+            MoonfinPlugin.InvalidatePluginRegistry(services.BuildServiceProvider());
+            Assert.NotSame(first, registry.List());
+            MoonfinPlugin.InvalidatePluginRegistry(null);
+            MoonfinPlugin.InvalidatePluginRegistry(new ServiceCollection().BuildServiceProvider());
         }
         finally
         {

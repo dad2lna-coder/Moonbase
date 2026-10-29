@@ -130,7 +130,7 @@ Proxy body:
 { "name": "example", "path": "items", "method": "GET", "query": { "q": "hi" } }
 ```
 
-`path` is relative to `baseUrl`. `..`, other hosts, and redirects are rejected. `inject` is `header` (the default, using `header` and optional `scheme`) or `query` (using `param`, for a TMDB-style `?api_key=`). The secret is added by Moonbase and stripped from the upstream body if it echoes. The caller cannot override that query parameter. Upstream responses that are not JSON (`application/json` or `+json`) or an image are returned as `text/plain` with `X-Content-Type-Options: nosniff`.
+`path` is relative to `baseUrl`. `..`, other hosts, and redirects are rejected. `inject` is `header` (the default, using `header` and optional `scheme`) or `query` (using `param`, for a TMDB-style `?api_key=`). The secret is added by Moonbase and stripped from text responses if it echoes. Image bodies other than `image/svg+xml` are passed through as raw bytes and are not decoded or scrubbed. `image/svg+xml` and anything that is not JSON (`application/json` or `+json`) or an image is returned as `text/plain`. Every proxy response sends `X-Content-Type-Options: nosniff` and `Content-Security-Policy: sandbox`.
 
 ## Packaging a client + server pair
 

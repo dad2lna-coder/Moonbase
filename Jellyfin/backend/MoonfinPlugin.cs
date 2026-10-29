@@ -3,6 +3,7 @@ using MediaBrowser.Common.Plugins;
 using MediaBrowser.Model.Plugins;
 using MediaBrowser.Model.Serialization;
 using Microsoft.Extensions.DependencyInjection;
+using Moonfin.Server.Plugins;
 using Moonfin.Server.Services;
 
 namespace Moonfin.Server;
@@ -105,6 +106,9 @@ public class MoonfinPlugin : BasePlugin<PluginConfiguration>, IHasWebPages
         var previousRomm = RommSignature(Configuration);
         base.UpdateConfiguration(configuration);
 
+        // MOFIN-PLUGIN-HOOK: host capability flags change with this save, so drop the cached plugin list.
+        InvalidatePluginRegistry(ServiceProvider);
+
         // Re-provision the Seerr webhook when the public URL changes, so the new URL is
         // pushed to Seerr without waiting for a restart. The provisioning guardrail only
         // overwrites our own webhook.
@@ -141,6 +145,21 @@ public class MoonfinPlugin : BasePlugin<PluginConfiguration>, IHasWebPages
                 // on the plugin instance, and the signal itself only sets a semaphore, so there is
                 // nothing here worth taking the config-save request path down for.
             }
+        }
+    }
+
+    /// <summary>
+    /// Drops the cached plugin list so the next read sees the host flags from the configuration just saved.
+    /// </summary>
+    internal static void InvalidatePluginRegistry(IServiceProvider? services)
+    {
+        try
+        {
+            services?.GetService<MoonfinPluginRegistry>()?.Invalidate();
+        }
+        catch (Exception)
+        {
+            // Saving configuration must succeed even when the registry is not in the container yet.
         }
     }
 

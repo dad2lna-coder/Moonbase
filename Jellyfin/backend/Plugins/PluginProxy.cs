@@ -23,7 +23,8 @@ public sealed class PluginProxyResult
 
     public string Body { get; init; } = string.Empty;
 
-    public bool Nosniff { get; init; }
+    /// <summary>Set for image responses. Null means <see cref="Body"/> is the text.</summary>
+    public byte[]? RawBody { get; init; }
 }
 
 /// <summary>
@@ -33,6 +34,17 @@ public sealed class PluginProxyResult
 public static class PluginProxy
 {
     public const int MaxResponseBytes = 1024 * 1024;
+
+    public const string ContentTypeOptionsHeader = "X-Content-Type-Options";
+
+    public const string ContentSecurityPolicyHeader = "Content-Security-Policy";
+
+    // MOFIN-PLUGIN-HOOK: every proxy response is nosniff and sandboxed, including JSON and images.
+    public static void ApplyResponseHeaders(IHeaderDictionary headers)
+    {
+        headers[ContentTypeOptionsHeader] = "nosniff";
+        headers[ContentSecurityPolicyHeader] = "sandbox";
+    }
 
     private static readonly HttpClient Http = new(new SocketsHttpHandler
     {
@@ -127,20 +139,58 @@ public static class PluginProxy
     }
 
     /// <summary>
-    /// JSON and images pass through. Everything else is forced to text/plain so a plugin proxy cannot serve active content.
+    /// JSON and real images pass through. SVG is treated as text. Everything else is forced to text/plain.
     /// </summary>
-    public static (string ContentType, bool Nosniff) PresentUpstream(string? mediaType)
+    // MOFIN-PLUGIN-HOOK: image/svg+xml is active content, so it is not passed through as an image.
+    public static PluginProxyPresentation PresentUpstream(string? mediaType)
     {
         var raw = mediaType?.Trim() ?? string.Empty;
         var essence = raw.Split(';')[0].Trim();
-        if (essence.Equals("application/json", StringComparison.OrdinalIgnoreCase)
-            || essence.EndsWith("+json", StringComparison.OrdinalIgnoreCase)
-            || essence.StartsWith("image/", StringComparison.OrdinalIgnoreCase))
+        if (essence.Equals("image/svg+xml", StringComparison.OrdinalIgnoreCase))
         {
-            return (string.IsNullOrEmpty(raw) ? essence : raw, false);
+            return new PluginProxyPresentation("text/plain; charset=utf-8", false);
         }
 
-        return ("text/plain; charset=utf-8", true);
+        if (essence.StartsWith("image/", StringComparison.OrdinalIgnoreCase))
+        {
+            return new PluginProxyPresentation(string.IsNullOrEmpty(raw) ? essence : raw, true);
+        }
+
+        if (essence.Equals("application/json", StringComparison.OrdinalIgnoreCase)
+            || essence.EndsWith("+json", StringComparison.OrdinalIgnoreCase))
+        {
+            return new PluginProxyPresentation(string.IsNullOrEmpty(raw) ? essence : raw, false);
+        }
+
+        return new PluginProxyPresentation("text/plain; charset=utf-8", false);
+    }
+
+    /// <summary>
+    /// Image bytes are returned unchanged. Text is decoded as UTF-8 and secrets are scrubbed.
+    /// </summary>
+    public static PluginProxyResult PresentBody(string? mediaType, byte[] bytes, string? secret)
+    {
+        var presented = PresentUpstream(mediaType);
+        if (presented.Binary)
+        {
+            return new PluginProxyResult
+            {
+                ContentType = presented.ContentType,
+                RawBody = bytes,
+            };
+        }
+
+        var body = Encoding.UTF8.GetString(bytes);
+        if (!string.IsNullOrEmpty(secret))
+        {
+            body = body.Replace(secret, PluginConfigStore.RedactedMarker, StringComparison.Ordinal);
+        }
+
+        return new PluginProxyResult
+        {
+            ContentType = presented.ContentType,
+            Body = body,
+        };
     }
 
     public static bool TryAppendQuerySecret(Uri upstream, string? param, string secret, out Uri? signed, out string? error)
@@ -291,19 +341,14 @@ public static class PluginProxy
             }
 
             var bytes = await ReadBounded(response.Content, cancellationToken).ConfigureAwait(false);
-            var body = Encoding.UTF8.GetString(bytes);
-            if (!string.IsNullOrEmpty(secret))
-            {
-                body = body.Replace(secret, PluginConfigStore.RedactedMarker, StringComparison.Ordinal);
-            }
-
-            var presented = PresentUpstream(response.Content.Headers.ContentType?.MediaType);
+            // MOFIN-PLUGIN-HOOK: image bodies stay raw bytes. Secrets are scrubbed from text only.
+            var presented = PresentBody(response.Content.Headers.ContentType?.MediaType, bytes, secret);
             return new PluginProxyResult
             {
                 StatusCode = (int)response.StatusCode,
                 ContentType = presented.ContentType,
-                Body = body,
-                Nosniff = presented.Nosniff,
+                Body = presented.Body,
+                RawBody = presented.RawBody,
             };
         }
     }
@@ -396,3 +441,5 @@ public static class PluginProxy
         public string? Secret { get; init; }
     }
 }
+
+public readonly record struct PluginProxyPresentation(string ContentType, bool Binary);

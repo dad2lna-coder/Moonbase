@@ -229,9 +229,12 @@ public class MoonfinPluginsController : ControllerBase
 
         var result = await PluginProxy.SendAsync(_registry.ReadConfig(id), request ?? new PluginProxyRequestBody(), cancellationToken)
             .ConfigureAwait(false);
-        if (result.Nosniff)
+        // MOFIN-PLUGIN-HOOK: every proxy response is nosniff and sandboxed. Images are raw bytes.
+        PluginProxy.ApplyResponseHeaders(Response.Headers);
+        if (result.RawBody != null)
         {
-            Response.Headers["X-Content-Type-Options"] = "nosniff";
+            Response.StatusCode = result.StatusCode;
+            return File(result.RawBody, result.ContentType);
         }
 
         return new ContentResult
