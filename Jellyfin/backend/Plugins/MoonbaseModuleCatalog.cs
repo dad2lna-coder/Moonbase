@@ -50,6 +50,13 @@ public sealed class MoonbaseModuleCatalog
         var catalog = new MoonbaseModuleCatalog();
         catalog.AddBuiltIn();
         var root = ResolvePluginsRoot(services, applicationHost);
+        if (string.IsNullOrWhiteSpace(root))
+        {
+            // Same folder the registry uses once the plugin instance exists. RegisterServices
+            // runs after the plugin constructor, so this is the path a restart will load.
+            root = Path.Combine(MoonfinPlugin.ResolveDataFolderPath(), MoonbasePlugins.FolderName);
+        }
+
         catalog.PluginsRoot = root;
         if (!string.IsNullOrWhiteSpace(root))
         {

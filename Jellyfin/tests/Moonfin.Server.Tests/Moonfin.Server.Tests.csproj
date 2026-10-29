@@ -29,6 +29,11 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\backend\Moonfin.Server.csproj" />
+    <!-- MOFIN-PLUGIN-HOOK: build the hello sample so its test can load the dll. Not a compile reference. -->
+    <ProjectReference Include="..\..\samples\plugins\hello\Moonfin.Plugin.Hello.csproj">
+      <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
+      <PrivateAssets>all</PrivateAssets>
+    </ProjectReference>
   </ItemGroup>
 
   <!-- The seasonal row's shared logic is compiled into both ports, so its tests run against each. -->
