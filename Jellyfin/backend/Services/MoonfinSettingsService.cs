@@ -547,6 +547,35 @@ public class MoonfinSettingsService
         return sent;
     }
 
+    // MOFIN-PLUGIN-HOOK: plugins emit events on the existing settings stream.
+    public int BroadcastPluginEvent(string jsonPayload)
+    {
+        if (string.IsNullOrWhiteSpace(jsonPayload))
+        {
+            return 0;
+        }
+
+        var trimmed = jsonPayload.Trim();
+        if (!trimmed.StartsWith('{') || !trimmed.EndsWith('}'))
+        {
+            return 0;
+        }
+
+        var sent = 0;
+        foreach (var channels in _sseChannels.Values)
+        {
+            foreach (var channel in channels.Keys)
+            {
+                if (channel.Writer.TryWrite(trimmed))
+                {
+                    sent++;
+                }
+            }
+        }
+
+        return sent;
+    }
+
     private MoonfinUserSettings MigrateV1ToV2(MoonfinUserSettings v1)
     {
         var global = new MoonfinSettingsProfile();

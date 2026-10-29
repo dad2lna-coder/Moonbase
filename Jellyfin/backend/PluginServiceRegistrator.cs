@@ -7,6 +7,7 @@ using Microsoft.Extensions.Logging;
 using Moonfin.LiveTv;
 using Moonfin.Pin;
 using Moonfin.Romm;
+using Moonfin.Server.Plugins;
 using Moonfin.Server.Services;
 
 namespace Moonfin.Server;
@@ -132,5 +133,24 @@ public class PluginServiceRegistrator : IPluginServiceRegistrator
         // Recommendations / Similar Items
         serviceCollection.AddSingleton<MoonfinSimilarItemsService>();
         serviceCollection.AddHostedService<MoonfinSimilarItemsProviderManager>();
+
+        // MOFIN-PLUGIN-HOOK: discover Moonbase modules and let each one register services.
+        var moonbaseModules = MoonbaseModuleCatalog.Discover(serviceCollection, applicationHost);
+        serviceCollection.AddSingleton(moonbaseModules);
+        foreach (var module in moonbaseModules.Modules)
+        {
+            try
+            {
+                module.RegisterServices(serviceCollection);
+            }
+            catch (Exception)
+            {
+                // One module cannot stop the rest of Moonbase from registering.
+            }
+        }
+
+        serviceCollection.AddSingleton<MoonfinPluginRegistry>();
+        serviceCollection.AddSingleton<IMoonbaseEvents, MoonbaseEvents>();
+        serviceCollection.AddHostedService<MoonfinPluginLifecycle>();
     }
 }

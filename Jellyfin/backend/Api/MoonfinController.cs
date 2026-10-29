@@ -14,6 +14,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Logging;
 using Moonfin.Server.Helpers;
 using Moonfin.Server.Models;
+using Moonfin.Server.Plugins;
 using Moonfin.Server.Services;
 
 namespace Moonfin.Server.Api;
@@ -37,6 +38,8 @@ public class MoonfinController : ControllerBase
     private readonly ItemCardDtoMapper _cardMapper;
     private readonly DefaultHiddenLibraries _hiddenLibraries;
     private readonly ILogger<MoonfinController> _logger;
+    // MOFIN-PLUGIN-HOOK: plugin capability flags for ping.
+    private readonly MoonfinPluginRegistry _pluginRegistry;
     
     private static readonly Type? _userManagerType = Type.GetType("MediaBrowser.Controller.Library.IUserManager, MediaBrowser.Controller");
     private static readonly MethodInfo? _userManagerGetUsersIds = _userManagerType?.GetMethod("GetUsersIds", Type.EmptyTypes);
@@ -53,7 +56,8 @@ public class MoonfinController : ControllerBase
         MoonfinSimilarItemsService similarItemsService,
         ItemCardDtoMapper cardMapper,
         DefaultHiddenLibraries hiddenLibraries,
-        ILogger<MoonfinController> logger)
+        ILogger<MoonfinController> logger,
+        MoonfinPluginRegistry pluginRegistry)
     {
         _settingsService = settingsService;
         _libraryManager = libraryManager;
@@ -64,6 +68,8 @@ public class MoonfinController : ControllerBase
         _cardMapper = cardMapper;
         _hiddenLibraries = hiddenLibraries;
         _logger = logger;
+        // MOFIN-PLUGIN-HOOK
+        _pluginRegistry = pluginRegistry;
     }
 
     /// <summary>
@@ -123,7 +129,7 @@ public class MoonfinController : ControllerBase
     {
         var config = MoonfinPlugin.Instance?.Configuration;
 
-        return Ok(new MoonfinPingResponse
+        var response = new MoonfinPingResponse
         {
             Installed = true,
             Version = MoonfinPlugin.Instance?.Version.ToString() ?? "1.0.0.0",
@@ -145,7 +151,20 @@ public class MoonfinController : ControllerBase
             ExtendedCompleteShowingsSupported = config?.LiveTvDetectIncompleteRecordings ?? true,
             RecommendationsSupported = config?.RecommendationsProviderEnabled ?? true,
             DefaultSettings = config?.DefaultUserSettings
-        });
+        };
+
+        // MOFIN-PLUGIN-HOOK: plugin flags only. Existing ping fields above are unchanged.
+        try
+        {
+            PluginPingMerge.Apply(response, _pluginRegistry.PingFlags());
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Moonbase plugin flags were left off ping");
+            response.Plugins = new Dictionary<string, bool>();
+        }
+
+        return Ok(response);
     }
 
     /// <summary>
@@ -1613,6 +1632,13 @@ public class MoonfinPingResponse
 
     [JsonPropertyName("defaultSettings")]
     public MoonfinSettingsProfile? DefaultSettings { get; set; }
+
+    /// <summary>
+    /// Capability flags from Moonbase plugins. A flag is true only when the server module
+    /// that does the work is active. Omitted flags are not provided by any installed plugin.
+    /// </summary>
+    [JsonPropertyName("plugins")]
+    public Dictionary<string, bool>? Plugins { get; set; }
 }
 
 /// <summary>

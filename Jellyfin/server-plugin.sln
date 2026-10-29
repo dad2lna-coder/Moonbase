@@ -8,6 +8,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Moonfin.Server", "backend\M
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Moonfin.Server.Tests", "tests\Moonfin.Server.Tests\Moonfin.Server.Tests.csproj", "{A67C4281-D4A9-4CF8-B0D8-5B91F0DBF26D}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Moonfin.Plugin.Hello", "samples\plugins\hello\Moonfin.Plugin.Hello.csproj", "{C4E8B1A2-7F63-4D19-9A40-6B2E8F1C0D55}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -22,6 +24,10 @@ Global
 		{A67C4281-D4A9-4CF8-B0D8-5B91F0DBF26D}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{A67C4281-D4A9-4CF8-B0D8-5B91F0DBF26D}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{A67C4281-D4A9-4CF8-B0D8-5B91F0DBF26D}.Release|Any CPU.Build.0 = Release|Any CPU
+		{C4E8B1A2-7F63-4D19-9A40-6B2E8F1C0D55}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{C4E8B1A2-7F63-4D19-9A40-6B2E8F1C0D55}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{C4E8B1A2-7F63-4D19-9A40-6B2E8F1C0D55}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{C4E8B1A2-7F63-4D19-9A40-6B2E8F1C0D55}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

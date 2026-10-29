@@ -1,0 +1,541 @@
+using System.Text;
+using System.Text.Json;
+using System.Text.Json.Serialization;
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Mvc;
+using Moonfin.Server.Plugins;
+
+namespace Moonfin.Server.Api;
+
+/// <summary>
+/// Moonbase plugin registry, client files, per-user data, admin config, and the allowlisted proxy.
+/// </summary>
+[ApiController]
+[Route("Moonfin")]
+public class MoonfinPluginsController : ControllerBase
+{
+    private const int MaxDataBytes = 256 * 1024;
+
+    private static readonly IReadOnlyDictionary<string, string> ContentTypes =
+        new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            [".html"] = "text/html; charset=utf-8",
+            [".htm"] = "text/html; charset=utf-8",
+            [".js"] = "application/javascript",
+            [".mjs"] = "text/javascript",
+            [".css"] = "text/css",
+            [".json"] = "application/json",
+            [".svg"] = "image/svg+xml",
+            [".png"] = "image/png",
+            [".jpg"] = "image/jpeg",
+            [".jpeg"] = "image/jpeg",
+            [".gif"] = "image/gif",
+            [".webp"] = "image/webp",
+            [".ico"] = "image/x-icon",
+            [".txt"] = "text/plain; charset=utf-8",
+            [".woff"] = "font/woff",
+            [".woff2"] = "font/woff2",
+        };
+
+    private readonly MoonfinPluginRegistry _registry;
+    private readonly MoonbaseModuleCatalog _catalog;
+
+    public MoonfinPluginsController(MoonfinPluginRegistry registry, MoonbaseModuleCatalog catalog)
+    {
+        _registry = registry;
+        _catalog = catalog;
+    }
+
+    [HttpGet("Plugins")]
+    [Authorize]
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    public ActionResult<PluginListResponse> List()
+    {
+        var statuses = _registry.List();
+        return Ok(new PluginListResponse
+        {
+            HostApi = MoonbasePlugins.HostApi,
+            Plugins = statuses.Select(ToItem).ToList(),
+            Capabilities = _registry.PingFlags(),
+        });
+    }
+
+    [HttpGet("Plugins/{id}/files/{**path}")]
+    [Authorize]
+    public IActionResult PluginFile(string id, string path)
+    {
+        if (!TryPluginDirectory(id, out var dir))
+        {
+            return NotFound(new { error = "Unknown plugin." });
+        }
+
+        if (!TrySafeFile(dir, path, out var full) || !System.IO.File.Exists(full))
+        {
+            return NotFound(new { error = "File not found." });
+        }
+
+        var extension = Path.GetExtension(full);
+        var type = ContentTypes.TryGetValue(extension, out var mapped) ? mapped : "application/octet-stream";
+        return PhysicalFile(full, type);
+    }
+
+    [HttpGet("Plugins/{id}/Data/{key}")]
+    [Authorize]
+    public IActionResult GetData(string id, string key)
+    {
+        if (!TryEnabled(id, out var error))
+        {
+            return error!;
+        }
+
+        var userId = this.GetUserIdFromClaims();
+        if (userId == null)
+        {
+            return Unauthorized(new { error = "User not authenticated" });
+        }
+
+        string path;
+        try
+        {
+            path = _registry.DataPath(id, userId.Value, key);
+        }
+        catch (InvalidOperationException)
+        {
+            return BadRequest(new { error = "Invalid data key." });
+        }
+
+        if (!System.IO.File.Exists(path))
+        {
+            return NotFound(new { error = "No value stored." });
+        }
+
+        return Content(System.IO.File.ReadAllText(path), "application/json; charset=utf-8");
+    }
+
+    [HttpPut("Plugins/{id}/Data/{key}")]
+    [Authorize]
+    public async Task<IActionResult> PutData(string id, string key, CancellationToken cancellationToken)
+    {
+        if (!TryEnabled(id, out var error))
+        {
+            return error!;
+        }
+
+        var userId = this.GetUserIdFromClaims();
+        if (userId == null)
+        {
+            return Unauthorized(new { error = "User not authenticated" });
+        }
+
+        string path;
+        try
+        {
+            path = _registry.DataPath(id, userId.Value, key);
+        }
+        catch (InvalidOperationException)
+        {
+            return BadRequest(new { error = "Invalid data key." });
+        }
+
+        var body = await ReadBody(cancellationToken).ConfigureAwait(false);
+        if (body == null)
+        {
+            return BadRequest(new { error = "Value is too large." });
+        }
+
+        try
+        {
+            using var _ = JsonDocument.Parse(body);
+        }
+        catch (JsonException)
+        {
+            return BadRequest(new { error = "Value must be JSON." });
+        }
+
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        await System.IO.File.WriteAllTextAsync(path, body, cancellationToken).ConfigureAwait(false);
+        return NoContent();
+    }
+
+    [HttpDelete("Plugins/{id}/Data/{key}")]
+    [Authorize]
+    public IActionResult DeleteData(string id, string key)
+    {
+        if (!TryEnabled(id, out var error))
+        {
+            return error!;
+        }
+
+        var userId = this.GetUserIdFromClaims();
+        if (userId == null)
+        {
+            return Unauthorized(new { error = "User not authenticated" });
+        }
+
+        string path;
+        try
+        {
+            path = _registry.DataPath(id, userId.Value, key);
+        }
+        catch (InvalidOperationException)
+        {
+            return BadRequest(new { error = "Invalid data key." });
+        }
+
+        if (System.IO.File.Exists(path))
+        {
+            System.IO.File.Delete(path);
+        }
+
+        return NoContent();
+    }
+
+    [HttpPost("Plugins/{id}/Proxy")]
+    [Authorize]
+    public async Task<IActionResult> Proxy(string id, CancellationToken cancellationToken)
+    {
+        if (!TryEnabled(id, out var error))
+        {
+            return error!;
+        }
+
+        var body = await ReadBody(cancellationToken).ConfigureAwait(false);
+        if (string.IsNullOrWhiteSpace(body))
+        {
+            return BadRequest(new { error = "Proxy request is required." });
+        }
+
+        PluginProxyRequestBody? request;
+        try
+        {
+            request = JsonSerializer.Deserialize<PluginProxyRequestBody>(body, PluginJson.Manifest);
+        }
+        catch (JsonException)
+        {
+            return BadRequest(new { error = "Proxy request must be JSON." });
+        }
+
+        var result = await PluginProxy.SendAsync(_registry.ReadConfig(id), request ?? new PluginProxyRequestBody(), cancellationToken)
+            .ConfigureAwait(false);
+        return new ContentResult
+        {
+            StatusCode = result.StatusCode,
+            ContentType = result.ContentType,
+            Content = result.Body,
+        };
+    }
+
+    [HttpGet("Plugins/{id}/{**path}")]
+    [HttpPost("Plugins/{id}/{**path}")]
+    [HttpPut("Plugins/{id}/{**path}")]
+    [HttpDelete("Plugins/{id}/{**path}")]
+    [Authorize]
+    public async Task<IActionResult> Dispatch(string id, string? path, CancellationToken cancellationToken)
+    {
+        path ??= string.Empty;
+        var head = path.Replace('\\', '/').Trim('/');
+        var first = head.Split('/', StringSplitOptions.RemoveEmptyEntries).FirstOrDefault() ?? string.Empty;
+        if (first.Equals("files", StringComparison.OrdinalIgnoreCase)
+            || first.Equals("Data", StringComparison.OrdinalIgnoreCase)
+            || first.Equals("Proxy", StringComparison.OrdinalIgnoreCase))
+        {
+            return NotFound(new { error = "Not found." });
+        }
+
+        var status = _registry.Find(id);
+        if (status == null || !status.Enabled)
+        {
+            return NotFound(new { error = "Unknown plugin." });
+        }
+
+        if (!status.Active)
+        {
+            return Conflict(new { error = "Plugin is dormant.", dormantReason = status.DormantReason });
+        }
+
+        if (!_catalog.TryGetRoute(status.Manifest.Id, Request.Method, head, out var handler) || handler == null)
+        {
+            return NotFound(new { error = "Not found." });
+        }
+
+        var body = await ReadBody(cancellationToken).ConfigureAwait(false);
+        var result = await handler(new PluginRouteRequest
+        {
+            Method = Request.Method,
+            Path = head,
+            Body = body,
+            UserId = this.GetUserIdFromClaims(),
+            IsAdmin = this.IsAdminFromClaims(),
+            Services = HttpContext.RequestServices,
+            CancellationToken = cancellationToken,
+        }).ConfigureAwait(false);
+
+        return new ContentResult
+        {
+            StatusCode = result.StatusCode,
+            ContentType = result.ContentType,
+            Content = result.Body,
+        };
+    }
+
+    [HttpPost("Admin/Plugins/Install")]
+    [Authorize(Policy = "RequiresElevation")]
+    [RequestSizeLimit(32L * 1024 * 1024)]
+    [RequestFormLimits(MultipartBodyLengthLimit = 32L * 1024 * 1024)]
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    public async Task<IActionResult> Install(IFormFile? file, CancellationToken cancellationToken)
+    {
+        Stream? stream = file?.OpenReadStream();
+        if (stream == null && Request.ContentLength.GetValueOrDefault() > 0)
+        {
+            stream = Request.Body;
+        }
+
+        if (stream == null)
+        {
+            return BadRequest(new { error = "Upload a plugin zip." });
+        }
+
+        await using (stream.ConfigureAwait(false))
+        {
+            var result = PluginZipInstaller.Install(stream, _registry.Root);
+            if (!result.Ok)
+            {
+                return BadRequest(new { error = result.Error });
+            }
+
+            var status = _registry.Find(result.Id!);
+            return Ok(new
+            {
+                id = result.Id,
+                restartRequired = result.RestartRequired,
+                enabled = status?.Enabled ?? true,
+                active = status?.Active ?? false,
+                dormantReason = status?.DormantReason,
+            });
+        }
+    }
+
+    [HttpPost("Admin/Plugins/{id}/Enable")]
+    [Authorize(Policy = "RequiresElevation")]
+    public ActionResult Enable(string id) => SetEnabled(id, true);
+
+    [HttpPost("Admin/Plugins/{id}/Disable")]
+    [Authorize(Policy = "RequiresElevation")]
+    public ActionResult Disable(string id) => SetEnabled(id, false);
+
+    [HttpDelete("Admin/Plugins/{id}")]
+    [Authorize(Policy = "RequiresElevation")]
+    public IActionResult Delete(string id)
+    {
+        if (!_registry.TryDelete(id, out var error))
+        {
+            return NotFound(new { error });
+        }
+
+        return Ok(new { deleted = true, id });
+    }
+
+    [HttpGet("Admin/Plugins/{id}/Config")]
+    [Authorize(Policy = "RequiresElevation")]
+    public IActionResult GetConfig(string id)
+    {
+        if (_registry.Find(id) == null)
+        {
+            return NotFound(new { error = "Unknown plugin." });
+        }
+
+        return Content(PluginConfigStore.ToClientJson(_registry.ReadConfig(id)), "application/json; charset=utf-8");
+    }
+
+    [HttpPut("Admin/Plugins/{id}/Config")]
+    [Authorize(Policy = "RequiresElevation")]
+    public async Task<IActionResult> PutConfig(string id, CancellationToken cancellationToken)
+    {
+        if (_registry.Find(id) == null)
+        {
+            return NotFound(new { error = "Unknown plugin." });
+        }
+
+        var body = await ReadBody(cancellationToken).ConfigureAwait(false);
+        if (string.IsNullOrWhiteSpace(body))
+        {
+            return BadRequest(new { error = "Config must be a JSON object." });
+        }
+
+        string merged;
+        try
+        {
+            merged = PluginConfigStore.Merge(_registry.ReadConfig(id), body);
+        }
+        catch (Exception ex) when (ex is InvalidDataException or JsonException)
+        {
+            return BadRequest(new { error = "Config must be a JSON object." });
+        }
+
+        _registry.WriteConfig(id, merged);
+        return Content(PluginConfigStore.ToClientJson(merged), "application/json; charset=utf-8");
+    }
+
+    private ActionResult SetEnabled(string id, bool enabled)
+    {
+        var status = _registry.SetEnabled(id, enabled, HttpContext.RequestServices);
+        if (status == null)
+        {
+            return NotFound(new { error = "Unknown plugin." });
+        }
+
+        return Ok(ToItem(status));
+    }
+
+    private bool TryPluginDirectory(string id, out string dir)
+    {
+        dir = string.Empty;
+        if (!PluginManifest.IsValidId(id))
+        {
+            return false;
+        }
+
+        dir = Path.Combine(_registry.Root, id);
+        return Directory.Exists(dir) && System.IO.File.Exists(Path.Combine(dir, "plugin.json"));
+    }
+
+    private bool TryEnabled(string id, out IActionResult? error)
+    {
+        var status = _registry.Find(id);
+        if (status == null || !status.Enabled)
+        {
+            error = NotFound(new { error = "Unknown plugin." });
+            return false;
+        }
+
+        error = null;
+        return true;
+    }
+
+    private async Task<string?> ReadBody(CancellationToken cancellationToken)
+    {
+        if (Request.ContentLength.GetValueOrDefault() > MaxDataBytes)
+        {
+            return null;
+        }
+
+        using var reader = new StreamReader(Request.Body, Encoding.UTF8, detectEncodingFromByteOrderMarks: false, bufferSize: 1024, leaveOpen: true);
+        var buffer = new char[MaxDataBytes + 1];
+        var read = await reader.ReadBlockAsync(buffer, 0, buffer.Length).WaitAsync(cancellationToken).ConfigureAwait(false);
+        if (read > MaxDataBytes)
+        {
+            return null;
+        }
+
+        return new string(buffer, 0, read);
+    }
+
+    private static bool TrySafeFile(string pluginDir, string? relative, out string full)
+    {
+        full = string.Empty;
+        if (string.IsNullOrWhiteSpace(relative))
+        {
+            return false;
+        }
+
+        var path = relative.Replace('\\', '/').TrimStart('/');
+        if (path.Length == 0
+            || path.Contains("..", StringComparison.Ordinal)
+            || path.Contains(':', StringComparison.Ordinal)
+            || path.Contains('\0', StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        var name = Path.GetFileName(path);
+        if (name.Equals("config.json", StringComparison.OrdinalIgnoreCase)
+            || name.Equals("state.json", StringComparison.OrdinalIgnoreCase)
+            || name.EndsWith(".dll", StringComparison.OrdinalIgnoreCase)
+            || name.EndsWith(".pdb", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        if (path.StartsWith("data/", StringComparison.OrdinalIgnoreCase) || path.Equals("data", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        var root = Path.GetFullPath(pluginDir);
+        var rootSep = root.EndsWith(Path.DirectorySeparatorChar) ? root : root + Path.DirectorySeparatorChar;
+        var destination = Path.GetFullPath(Path.Combine(root, path.Replace('/', Path.DirectorySeparatorChar)));
+        if (!destination.StartsWith(rootSep, StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        full = destination;
+        return true;
+    }
+
+    private static PluginListItem ToItem(PluginCapabilityResolver.PluginStatus status) =>
+        new()
+        {
+            Id = status.Manifest.Id,
+            Name = status.Manifest.Name,
+            Version = status.Manifest.Version,
+            Description = status.Manifest.Description,
+            Enabled = status.Enabled,
+            Active = status.Active,
+            DormantReason = status.DormantReason,
+            Provides = status.Manifest.Provides,
+            Requires = status.Manifest.Requires,
+            Slots = status.Manifest.Slots,
+            ClientEntryUrl = status.Manifest.ClientEntryUrl(),
+        };
+}
+
+public sealed class PluginListResponse
+{
+    [JsonPropertyName("hostApi")]
+    public int HostApi { get; set; }
+
+    [JsonPropertyName("plugins")]
+    public List<PluginListItem> Plugins { get; set; } = new();
+
+    [JsonPropertyName("capabilities")]
+    public Dictionary<string, bool> Capabilities { get; set; } = new();
+}
+
+public sealed class PluginListItem
+{
+    [JsonPropertyName("id")]
+    public string Id { get; set; } = string.Empty;
+
+    [JsonPropertyName("name")]
+    public string Name { get; set; } = string.Empty;
+
+    [JsonPropertyName("version")]
+    public string Version { get; set; } = string.Empty;
+
+    [JsonPropertyName("description")]
+    public string Description { get; set; } = string.Empty;
+
+    [JsonPropertyName("enabled")]
+    public bool Enabled { get; set; }
+
+    [JsonPropertyName("active")]
+    public bool Active { get; set; }
+
+    [JsonPropertyName("dormantReason")]
+    public string? DormantReason { get; set; }
+
+    [JsonPropertyName("provides")]
+    public IReadOnlyList<string> Provides { get; set; } = Array.Empty<string>();
+
+    [JsonPropertyName("requires")]
+    public IReadOnlyList<string> Requires { get; set; } = Array.Empty<string>();
+
+    [JsonPropertyName("slots")]
+    public IReadOnlyList<string> Slots { get; set; } = Array.Empty<string>();
+
+    [JsonPropertyName("clientEntryUrl")]
+    public string? ClientEntryUrl { get; set; }
+}

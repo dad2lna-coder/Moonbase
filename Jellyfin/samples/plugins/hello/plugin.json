@@ -1,0 +1,15 @@
+{
+  "id": "hello",
+  "name": "Hello",
+  "version": "1.0.0",
+  "description": "A tiny home row from a Moonbase plugin.",
+  "provides": ["hello.homeRow"],
+  "requires": [],
+  "slots": ["homeRow"],
+  "client": {
+    "html": "client/index.html",
+    "js": "client/app.js"
+  },
+  "server": "HelloModule",
+  "minHostApi": 1
+}
