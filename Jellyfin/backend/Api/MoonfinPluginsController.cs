@@ -2,7 +2,10 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Http.Features;
 using Microsoft.AspNetCore.Mvc;
 using Moonfin.Server.Plugins;
 
@@ -17,6 +20,9 @@ public class MoonfinPluginsController : ControllerBase
 {
     private const int MaxDataBytes = 256 * 1024;
 
+    private const string ClientPagePolicy =
+        "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'; frame-ancestors 'self'; object-src 'none'; base-uri 'self'";
+
     private static readonly IReadOnlyDictionary<string, string> ContentTypes =
         new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
         {
@@ -26,6 +32,7 @@ public class MoonfinPluginsController : ControllerBase
             [".mjs"] = "text/javascript",
             [".css"] = "text/css",
             [".json"] = "application/json",
+            [".map"] = "application/json",
             [".svg"] = "image/svg+xml",
             [".png"] = "image/png",
             [".jpg"] = "image/jpeg",
@@ -36,6 +43,7 @@ public class MoonfinPluginsController : ControllerBase
             [".txt"] = "text/plain; charset=utf-8",
             [".woff"] = "font/woff",
             [".woff2"] = "font/woff2",
+            [".ttf"] = "font/ttf",
         };
 
     private readonly MoonfinPluginRegistry _registry;
@@ -61,22 +69,46 @@ public class MoonfinPluginsController : ControllerBase
         });
     }
 
+    // The plugin WebView sends Authorization only on the first page load, so client files are
+    // anonymous. Anything outside that plugin's client folder stays unreadable.
     [HttpGet("Plugins/{id}/files/{**path}")]
-    [Authorize]
+    [AllowAnonymous]
     public IActionResult PluginFile(string id, string path)
     {
-        if (!TryPluginDirectory(id, out var dir))
+        if (!RequestPathAllowsFiles(Request.Path.Value) || !TryPublicPlugin(id, out var manifest) || manifest == null)
         {
-            return NotFound(new { error = "Unknown plugin." });
+            return MissingFile();
         }
 
-        if (!TrySafeFile(dir, path, out var full) || !System.IO.File.Exists(full))
+        var pluginDir = Path.Combine(_registry.Root, manifest.Id);
+        if (!IsUnderClientFolder(manifest, path)
+            || !TrySafeFile(pluginDir, path, out var full)
+            || !IsRealFileInside(pluginDir, full))
         {
-            return NotFound(new { error = "File not found." });
+            return MissingFile();
         }
 
         var extension = Path.GetExtension(full);
-        var type = ContentTypes.TryGetValue(extension, out var mapped) ? mapped : "application/octet-stream";
+        if (!ContentTypes.TryGetValue(extension, out var type) || !IsResolvedInsideClient(manifest, pluginDir, full))
+        {
+            return MissingFile();
+        }
+
+        var etag = FileEtag(new FileInfo(full));
+        Response.Headers["Cache-Control"] = "no-cache";
+        Response.Headers["ETag"] = etag;
+        Response.Headers["X-Content-Type-Options"] = "nosniff";
+        if (extension.Equals(".html", StringComparison.OrdinalIgnoreCase)
+            || extension.Equals(".htm", StringComparison.OrdinalIgnoreCase))
+        {
+            Response.Headers["Content-Security-Policy"] = ClientPagePolicy;
+        }
+
+        if (NoneMatch(etag))
+        {
+            return StatusCode(StatusCodes.Status304NotModified);
+        }
+
         return PhysicalFile(full, type);
     }
 
@@ -422,16 +454,282 @@ public class MoonfinPluginsController : ControllerBase
         return Ok(ToItem(status));
     }
 
-    private bool TryPluginDirectory(string id, out string dir)
+    private bool TryPublicPlugin(string id, out PluginManifest? manifest)
     {
-        dir = string.Empty;
+        manifest = null;
         if (!PluginManifest.IsValidId(id))
         {
             return false;
         }
 
-        dir = Path.Combine(_registry.Root, id);
-        return Directory.Exists(dir) && System.IO.File.Exists(Path.Combine(dir, "plugin.json"));
+        var status = _registry.Find(id);
+        if (status is not { Enabled: true, Active: true })
+        {
+            return false;
+        }
+
+        manifest = status.Manifest;
+        return true;
+    }
+
+    private IActionResult MissingFile() => NotFound(new { error = "File not found." });
+
+    private bool NoneMatch(string etag)
+    {
+        if (!Request.Headers.TryGetValue("If-None-Match", out var header))
+        {
+            return false;
+        }
+
+        var value = header.ToString();
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return false;
+        }
+
+        foreach (var part in value.Split(','))
+        {
+            var token = part.Trim();
+            if (token == "*")
+            {
+                return true;
+            }
+
+            if (token.StartsWith("W/", StringComparison.OrdinalIgnoreCase))
+            {
+                token = token[2..].Trim();
+            }
+
+            if (string.Equals(token, etag, StringComparison.Ordinal))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static string FileEtag(FileInfo info) =>
+        "\"" + info.Length.ToString("x") + "-" + info.LastWriteTimeUtc.Ticks.ToString("x") + "\"";
+
+    private static bool RequestPathAllowsFiles(string? path)
+    {
+        if (string.IsNullOrEmpty(path) || !TryUnescape(path, out var unescaped))
+        {
+            return false;
+        }
+
+        return PathTextIsSafe(path) && PathTextIsSafe(unescaped);
+    }
+
+    private static bool TryPublicRelative(string? relative)
+    {
+        if (string.IsNullOrWhiteSpace(relative) || !TryUnescape(relative, out var unescaped))
+        {
+            return false;
+        }
+
+        return RelativeTextIsSafe(relative) && RelativeTextIsSafe(unescaped);
+    }
+
+    private static bool TryUnescape(string value, out string unescaped)
+    {
+        try
+        {
+            unescaped = Uri.UnescapeDataString(value);
+            return true;
+        }
+        catch (UriFormatException)
+        {
+            unescaped = string.Empty;
+            return false;
+        }
+    }
+
+    private static bool PathTextIsSafe(string value)
+    {
+        if (ContainsEncodedDotOrSlash(value) || value.Contains('\\', StringComparison.Ordinal) || value.Contains('\0', StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        foreach (var segment in value.Split('/'))
+        {
+            if (segment.Length == 0)
+            {
+                continue;
+            }
+
+            if (segment[0] == '.' || segment.Contains(':', StringComparison.Ordinal))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static bool RelativeTextIsSafe(string relative)
+    {
+        if (relative.StartsWith('/')
+            || relative.StartsWith('\\')
+            || Path.IsPathRooted(relative)
+            || ContainsEncodedDotOrSlash(relative)
+            || relative.Contains('\\', StringComparison.Ordinal)
+            || relative.Contains('\0', StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        var segments = relative.Split('/');
+        if (segments.Length == 0)
+        {
+            return false;
+        }
+
+        foreach (var segment in segments)
+        {
+            if (segment.Length == 0 || segment[0] == '.' || segment.Contains(':', StringComparison.Ordinal))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static bool ContainsEncodedDotOrSlash(string value) =>
+        value.Contains("%2e", StringComparison.OrdinalIgnoreCase)
+        || value.Contains("%2f", StringComparison.OrdinalIgnoreCase)
+        || value.Contains("%5c", StringComparison.OrdinalIgnoreCase)
+        || value.Contains("%252e", StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsUnderClientFolder(PluginManifest manifest, string? relative)
+    {
+        if (!TryPublicRelative(relative))
+        {
+            return false;
+        }
+
+        var path = relative!.Replace('\\', '/').Trim('/');
+        foreach (var folder in ClientFolders(manifest))
+        {
+            if (path.StartsWith(folder + "/", StringComparison.Ordinal))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool IsResolvedInsideClient(PluginManifest manifest, string pluginDir, string full)
+    {
+        var destination = Path.GetFullPath(full);
+        foreach (var folder in ClientFolders(manifest))
+        {
+            var root = Path.GetFullPath(Path.Combine(pluginDir, folder.Replace('/', Path.DirectorySeparatorChar)));
+            if (IsInsideRoot(root, destination))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static List<string> ClientFolders(PluginManifest manifest)
+    {
+        var folders = new List<string>();
+        AddClientFolder(folders, manifest.Client?.Html);
+        AddClientFolder(folders, manifest.Client?.Js);
+        if (folders.Count == 0)
+        {
+            folders.Add("client");
+        }
+
+        return folders;
+    }
+
+    private static void AddClientFolder(List<string> folders, string? entry)
+    {
+        if (string.IsNullOrWhiteSpace(entry))
+        {
+            return;
+        }
+
+        var relative = entry.Replace('\\', '/').Trim().TrimStart('/');
+        var slash = relative.LastIndexOf('/');
+        var folder = slash < 0 ? "client" : relative[..slash];
+        if (!IsAllowedClientFolder(folder) || folders.Contains(folder, StringComparer.Ordinal))
+        {
+            return;
+        }
+
+        folders.Add(folder);
+    }
+
+    private static bool IsAllowedClientFolder(string folder)
+    {
+        if (folder.Length == 0
+            || folder.Contains("..", StringComparison.Ordinal)
+            || folder.Contains(':', StringComparison.Ordinal)
+            || folder.Contains('\\', StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        var first = folder.Split('/')[0];
+        return first.Length > 0
+            && first[0] != '.'
+            && first[0] != '_'
+            && !first.Equals("server", StringComparison.OrdinalIgnoreCase)
+            && !first.Equals("data", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsRealFileInside(string root, string destination)
+    {
+        try
+        {
+            var rootFull = Path.GetFullPath(root);
+            var full = Path.GetFullPath(destination);
+            if (!IsInsideRoot(rootFull, full) || !System.IO.File.Exists(full))
+            {
+                return false;
+            }
+
+            if (System.IO.File.GetAttributes(full).HasFlag(FileAttributes.ReparsePoint))
+            {
+                return false;
+            }
+
+            var foundRoot = false;
+            for (var current = new DirectoryInfo(Path.GetDirectoryName(full)!); current != null; current = current.Parent)
+            {
+                if (current.Attributes.HasFlag(FileAttributes.ReparsePoint))
+                {
+                    return false;
+                }
+
+                if (string.Equals(current.FullName, rootFull, StringComparison.Ordinal))
+                {
+                    foundRoot = true;
+                    break;
+                }
+            }
+
+            return foundRoot;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return false;
+        }
+    }
+
+    private static bool IsInsideRoot(string root, string destination)
+    {
+        var rootSep = root.EndsWith(Path.DirectorySeparatorChar) ? root : root + Path.DirectorySeparatorChar;
+        return destination.StartsWith(rootSep, StringComparison.Ordinal);
     }
 
     private bool TryActive(string id, out IActionResult? error)
@@ -474,12 +772,12 @@ public class MoonfinPluginsController : ControllerBase
     private static bool TrySafeFile(string pluginDir, string? relative, out string full)
     {
         full = string.Empty;
-        if (string.IsNullOrWhiteSpace(relative))
+        if (!TryPublicRelative(relative))
         {
             return false;
         }
 
-        var path = relative.Replace('\\', '/').TrimStart('/');
+        var path = relative!.Replace('\\', '/').TrimStart('/');
         if (path.Length == 0
             || path.Contains("..", StringComparison.Ordinal)
             || path.Contains(':', StringComparison.Ordinal)
@@ -491,21 +789,23 @@ public class MoonfinPluginsController : ControllerBase
         var name = Path.GetFileName(path);
         if (name.Equals("config.json", StringComparison.OrdinalIgnoreCase)
             || name.Equals("state.json", StringComparison.OrdinalIgnoreCase)
+            || name.Equals("plugin.json", StringComparison.OrdinalIgnoreCase)
             || name.EndsWith(".dll", StringComparison.OrdinalIgnoreCase)
-            || name.EndsWith(".pdb", StringComparison.OrdinalIgnoreCase))
+            || name.EndsWith(".pdb", StringComparison.OrdinalIgnoreCase)
+            || name.EndsWith(".so", StringComparison.OrdinalIgnoreCase))
         {
             return false;
         }
 
-        if (path.StartsWith("data/", StringComparison.OrdinalIgnoreCase) || path.Equals("data", StringComparison.OrdinalIgnoreCase))
+        if (path.StartsWith("data/", StringComparison.OrdinalIgnoreCase) || path.Equals("data", StringComparison.OrdinalIgnoreCase)
+            || path.StartsWith("server/", StringComparison.OrdinalIgnoreCase) || path.Equals("server", StringComparison.OrdinalIgnoreCase))
         {
             return false;
         }
 
         var root = Path.GetFullPath(pluginDir);
-        var rootSep = root.EndsWith(Path.DirectorySeparatorChar) ? root : root + Path.DirectorySeparatorChar;
         var destination = Path.GetFullPath(Path.Combine(root, path.Replace('/', Path.DirectorySeparatorChar)));
-        if (!destination.StartsWith(rootSep, StringComparison.Ordinal))
+        if (!IsInsideRoot(root, destination))
         {
             return false;
         }
@@ -581,6 +881,67 @@ public sealed class PluginListItem
 
     [JsonPropertyName("proxyAccess")]
     public string ProxyAccess { get; set; } = "admin";
+}
+
+/// <summary>
+/// Kestrel collapses <c>..</c> and <c>%2e</c> before routing, which would turn a files request
+/// into the authorized catch-all. Reject those raw targets before authentication runs.
+/// </summary>
+public sealed class PluginClientFileGuard : IStartupFilter
+{
+    public Action<IApplicationBuilder> Configure(Action<IApplicationBuilder> next) =>
+        app =>
+        {
+            app.Use(RejectTraversal);
+            next(app);
+        };
+
+    internal static async Task RejectTraversal(HttpContext context, RequestDelegate next)
+    {
+        if (IsRawFileTraversal(context.Features.Get<IHttpRequestFeature>()?.RawTarget))
+        {
+            context.Response.StatusCode = StatusCodes.Status404NotFound;
+            context.Response.ContentType = "application/json; charset=utf-8";
+            await context.Response.WriteAsync("{\"error\":\"File not found.\"}", context.RequestAborted).ConfigureAwait(false);
+            return;
+        }
+
+        await next(context).ConfigureAwait(false);
+    }
+
+    internal static bool IsRawFileTraversal(string? rawTarget)
+    {
+        if (string.IsNullOrEmpty(rawTarget))
+        {
+            return false;
+        }
+
+        var path = rawTarget;
+        var query = path.IndexOf('?');
+        if (query >= 0)
+        {
+            path = path[..query];
+        }
+
+        var hash = path.IndexOf('#');
+        if (hash >= 0)
+        {
+            path = path[..hash];
+        }
+
+        if (!path.Contains("/Moonfin/Plugins/", StringComparison.OrdinalIgnoreCase)
+            || !path.Contains("/files/", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        return path.Contains("..", StringComparison.Ordinal)
+            || path.Contains('\\', StringComparison.Ordinal)
+            || path.Contains("%2e", StringComparison.OrdinalIgnoreCase)
+            || path.Contains("%2f", StringComparison.OrdinalIgnoreCase)
+            || path.Contains("%5c", StringComparison.OrdinalIgnoreCase)
+            || path.Contains("%252e", StringComparison.OrdinalIgnoreCase);
+    }
 }
 
 /// <summary>Data and proxy are only for an active plugin. Proxy defaults to administrators.</summary>

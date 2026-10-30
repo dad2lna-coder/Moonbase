@@ -2,11 +2,13 @@ using Jellyfin.Data.Events.Users;
 using MediaBrowser.Controller;
 using MediaBrowser.Controller.Events;
 using MediaBrowser.Controller.Plugins;
+using Microsoft.AspNetCore.Hosting;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Moonfin.LiveTv;
 using Moonfin.Pin;
 using Moonfin.Romm;
+using Moonfin.Server.Api;
 using Moonfin.Server.Plugins;
 using Moonfin.Server.Services;
 
@@ -20,6 +22,10 @@ public class PluginServiceRegistrator : IPluginServiceRegistrator
     /// <inheritdoc />
     public void RegisterServices(IServiceCollection serviceCollection, IServerApplicationHost applicationHost)
     {
+        // Files requests that still contain .. or %2e must 404 before Kestrel's normalized path
+        // falls through to the authorized plugin catch-all.
+        serviceCollection.AddSingleton<IStartupFilter, PluginClientFileGuard>();
+
         serviceCollection.AddSingleton<MoonfinSettingsService>();
         serviceCollection.AddSingleton<IUserDirectory, UserDirectory>();
         serviceCollection.AddSingleton<DefaultHiddenLibraries>();
