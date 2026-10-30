@@ -230,6 +230,13 @@ public class PluginConfiguration : BasePluginConfiguration
     public bool WebEnableWebRtcScan { get; set; } = true;
 
     /// <summary>
+    /// Origins allowed to embed plugin client pages, besides this server (<c>'self'</c>).
+    /// Each entry must be <c>http(s)://host[:port]</c> with no path, query, or wildcard.
+    /// Invalid entries are ignored when the client-page policy is built.
+    /// </summary>
+    public List<string> PluginFrameAncestors { get; set; } = new();
+
+    /// <summary>
     /// Firebase service-account JSON, pasted by the admin, used to mint FCM access tokens
     /// for push delivery. This is a secret: it is never logged. Leave empty to disable push.
     /// </summary>
@@ -483,6 +490,99 @@ public class PluginConfiguration : BasePluginConfiguration
         }
 
         return value;
+    }
+
+    /// <summary>
+    /// Keeps entries that are <c>http</c> or <c>https</c> origins (<c>scheme://host[:port]</c>)
+    /// and drops paths, queries, userinfo, and wildcards. Order is preserved; duplicates collapse.
+    /// </summary>
+    public static IReadOnlyList<string> NormalizeFrameAncestors(IEnumerable<string>? raw)
+    {
+        if (raw == null)
+        {
+            return Array.Empty<string>();
+        }
+
+        var kept = new List<string>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var item in raw)
+        {
+            if (TryNormalizeOrigin(item, out var origin) && seen.Add(origin))
+            {
+                kept.Add(origin);
+            }
+        }
+
+        return kept;
+    }
+
+    /// <summary>
+    /// Accepts <c>scheme://host[:port]</c> only. An explicit port is kept, including a default port.
+    /// </summary>
+    internal static bool TryNormalizeOrigin(string? raw, out string origin)
+    {
+        origin = string.Empty;
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            return false;
+        }
+
+        var value = raw.Trim();
+        if (value.IndexOf('*') >= 0
+            || value.IndexOf(' ') >= 0
+            || value.IndexOf('\t') >= 0
+            || value.IndexOf('\\') >= 0)
+        {
+            return false;
+        }
+
+        if (!Uri.TryCreate(value, UriKind.Absolute, out var uri)
+            || (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps)
+            || !string.IsNullOrEmpty(uri.UserInfo)
+            || !string.IsNullOrEmpty(uri.Query)
+            || !string.IsNullOrEmpty(uri.Fragment)
+            || (uri.AbsolutePath is not "/" and not "")
+            || string.IsNullOrEmpty(uri.Host))
+        {
+            return false;
+        }
+
+        var schemeSep = value.IndexOf("://", StringComparison.Ordinal);
+        if (schemeSep < 0)
+        {
+            return false;
+        }
+
+        var authority = value[(schemeSep + 3)..];
+        if (authority.Length == 0
+            || authority.Contains('/')
+            || authority.Contains('@')
+            || authority.Contains('?')
+            || authority.Contains('#'))
+        {
+            return false;
+        }
+
+        var host = uri.HostNameType == UriHostNameType.IPv6 ? "[" + uri.Host + "]" : uri.Host;
+        var colon = authority.LastIndexOf(':');
+        var bracket = authority.LastIndexOf(']');
+        if (colon > bracket)
+        {
+            var portText = authority[(colon + 1)..];
+            if (portText.Length == 0
+                || (portText.Length > 1 && portText[0] == '0')
+                || !int.TryParse(portText, System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out var port)
+                || port < 1
+                || port > 65535)
+            {
+                return false;
+            }
+
+            host += ":" + port.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        }
+
+        origin = uri.Scheme + "://" + host;
+        return true;
     }
 }
 

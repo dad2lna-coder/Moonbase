@@ -75,6 +75,7 @@ Routes map under `/Moonfin/Plugins/{id}/`. Do not use `files`, `Data`, or `Proxy
 | --- | --- | --- |
 | GET | `/Moonfin/Plugins` | Signed-in user. Plugins (`enabled`, `active`, `dormantReason`, `provides`, `slots`, `clientEntryUrl`, `version`) and the capability map. |
 | GET | `/Moonfin/Plugins/{id}/files/{path}` | Public, no login. An enabled, active plugin's client folder, or a root-level entry file. |
+| GET | `/Moonfin/PluginHost/bridge.js` | Public, no login. The `window.MoFinHost` bridge injected into plugin HTML. |
 | GET/PUT/DELETE | `/Moonfin/Plugins/{id}/Data/{key}` | Signed-in user. The plugin must be active. Per-user JSON, one token key. 200 keys and 5 MB per user; over that returns 413. |
 | POST | `/Moonfin/Plugins/{id}/Proxy` | The plugin must be active. Administrators only, unless `proxyAccess` is `user`. Allowlisted upstream. Moonbase adds the secret. |
 | GET/POST/PUT/DELETE | `/Moonfin/Plugins/{id}/{path}` | Routes the active module mapped. Dormant modules return 409. |
@@ -84,9 +85,34 @@ Routes map under `/Moonfin/Plugins/{id}/`. Do not use `files`, `Data`, or `Proxy
 | DELETE | `/Moonfin/Admin/Plugins/{id}` | Admin. |
 | GET/PUT | `/Moonfin/Admin/Plugins/{id}/Config` | Admin. Secret values are never returned. |
 
-Client files are public. MoFin's plugin WebView sends the Authorization header only on the first page load, so `GET /Moonfin/Plugins/{id}/files/{path}` does not require a login and every sub-file (html, js, css, images, fonts) has to load without one. Never put secrets, tokens, or private config in that folder. Anything private goes through the Data or Proxy routes, which still require a signed-in user. Disabled, dormant, and unknown plugins all answer 404, the same as a missing file. `plugin.json`, `config.json`, `data/`, dotfiles, the server half, and native libraries are not served. Only an enabled, active plugin's client folder is, and only web and asset extensions. A root-level entry is not a folder: only that file (and a root-level `client.js`) is served. `.svg` responses send the same page `Content-Security-Policy` as html.
+Client files are public. MoFin's plugin WebView sends the Authorization header only on the first page load, and the web build embeds the same pages in a sandboxed iframe, so `GET /Moonfin/Plugins/{id}/files/{path}` does not require a login and every sub-file (html, js, css, images, fonts) has to load without one. Those responses send `Access-Control-Allow-Origin: *`. Data, Proxy, and plugin routes do not. Never put secrets, tokens, or private config in that folder. Anything private goes through the Data or Proxy routes, which still require a signed-in user. Disabled, dormant, and unknown plugins all answer 404, the same as a missing file. `plugin.json`, `config.json`, `data/`, dotfiles, the server half, and native libraries are not served. Only an enabled, active plugin's client folder is, and only web and asset extensions. A root-level entry is not a folder: only that file (and a root-level `client.js`) is served. `.html` and `.htm` responses include the bridge script (see below). `.svg` responses send the same page `Content-Security-Policy` as html and are not rewritten.
 
 `GET /Moonfin/Ping` gains a `plugins` object. Existing ping fields are unchanged. Example: `{ "plugins": { "hello.homeRow": true } }`. `true` means an active server module listed that flag. Anything else is `false` or absent.
+
+## Web embedding
+
+MoFin web loads a plugin page in a sandboxed iframe with an opaque origin (no `allow-same-origin`). That page cannot use the native `MoFinPluginBridge` object, so Moonbase serves the same `window.MoFinHost` API from `GET /Moonfin/PluginHost/bridge.js` and injects it into every `.html` / `.htm` client file:
+
+```html
+<script src="/Moonfin/PluginHost/bridge.js"></script>
+```
+
+Under a sub-path the `src` includes that base (for example `/jellyfin/Moonfin/PluginHost/bridge.js`). The tag is inserted immediately after the first `<head>` element, any case and any attributes. `<header>` is not a head. A page with no head gets the tag at the start, and it is inserted once. JavaScript, SVG, and every other client file are served unchanged.
+
+`bridge.js` is public, `application/javascript`, `X-Content-Type-Options: nosniff`, and carries a strong ETag. HTML ETags include that bridge version, so a bridge change refreshes a cached page. If `window.MoFinHost` already exists (the native WebView injection), the script returns and leaves it alone. Otherwise it reads `mofinNonce` from the URL hash and removes that parameter with `history.replaceState`.
+
+`window.MoFinHost.call(method, params)` returns a Promise. Callback ids look like `cb_<n>_<timestamp>`. `onEvent(callback)` subscribes to host events. Replies arrive through `_handleResponse` and events through `_handleEvent`, the same contract as MoFin's `getBridgeInjectionScript`.
+
+Transport, in order:
+
+1. `window.flutter_inappwebview.callHandler('MoFinPluginBridge', payloadJson)` when `callHandler` exists (the native WebView).
+2. Otherwise `window.parent.postMessage({ mofin: 1, nonce, payload: payloadJson }, '*')`.
+
+`payloadJson` is the JSON text `{ "method", "params", "callbackId" }`. The parent answers the iframe with `postMessage` data `{ mofin: 1, nonce, type: "response" | "event", data }`. The page ignores a message unless `event.source === window.parent`, `data.mofin === 1`, and `data.nonce` is the nonce from the hash. `type: "response"` calls `_handleResponse(data.data)`. `type: "event"` calls `_handleEvent(data.data)`.
+
+A sandboxed document's `'self'` is the opaque origin, not this server, so the client-page `Content-Security-Policy` is built per request and names this server's origin (`{scheme}://{host}`) beside `'self'` in `default-src`, `script-src`, `style-src`, `img-src`, and `connect-src`. `frame-ancestors` is `'self'` plus **Plugin frame ancestors** (`PluginFrameAncestors` on the Moonbase config page). Each entry must be `http://` or `https://` plus a host and optional port, with no path, query, userinfo, or wildcard. Anything else is dropped and is not written into the policy. Set the list when MoFin web is not served from this server's own origin.
+
+Load the entry URL with an unguessable nonce in the hash, for example `https://jellyfin.example.com/Moonfin/Plugins/hello/files/client/index.html#mofinNonce=<nonce>`.
 
 ## Capability rules
 

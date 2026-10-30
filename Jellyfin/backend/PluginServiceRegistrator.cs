@@ -25,6 +25,7 @@ public class PluginServiceRegistrator : IPluginServiceRegistrator
         // Files requests that still contain .. or %2e must 404 before Kestrel's normalized path
         // falls through to the authorized plugin catch-all.
         serviceCollection.AddSingleton<IStartupFilter, PluginClientFileGuard>();
+        serviceCollection.AddSingleton<IPluginFrameAncestorProvider, PluginFrameAncestorProvider>();
 
         serviceCollection.AddSingleton<MoonfinSettingsService>();
         serviceCollection.AddSingleton<IUserDirectory, UserDirectory>();

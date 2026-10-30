@@ -867,6 +867,16 @@
                                 Disable if your browser environment blocks or restricts WebRTC.
                             </div>
                         </div>
+                        <div class="inputContainer">
+                            <label class="inputLabel inputLabelUnfocused" for="PluginFrameAncestors">Plugin frame ancestors</label>
+                            <textarea id="PluginFrameAncestors" is="emby-textarea" rows="4" placeholder="https://app.example.com"></textarea>
+                            <div class="fieldDescription">
+                                Origins allowed to embed plugin pages in an iframe, one per line, besides this server.
+                                Each line must be a scheme, host, and optional port, such as
+                                <code>https://app.example.com</code> or <code>http://192.168.1.10:8096</code>.
+                                Paths and wildcards are ignored. Set this when MoFin web is not served from this server.
+                            </div>
+                        </div>
                     </div>
                     </section>
                     <section class="moonfinTabPanel" data-tab="integrations">
@@ -7188,6 +7198,7 @@
                     document.querySelector('#WebDefaultServerUrl').value = config.WebDefaultServerUrl || '';
                     document.querySelector('#WebForcedServerUrl').value = config.WebForcedServerUrl || '';
                     document.querySelector('#WebEnableWebRtcScan').checked = config.WebEnableWebRtcScan !== false;
+                    document.querySelector('#PluginFrameAncestors').value = (config.PluginFrameAncestors || []).join('\n');
 
                     loadLibraryPicker('#DefaultHiddenLibraryPicker', 'defaultHiddenLibraryCb', config.DefaultHiddenLibraryIds || []);
 
@@ -8074,6 +8085,10 @@
                         config.WebDefaultServerUrl = document.querySelector('#WebDefaultServerUrl').value || null;
                         config.WebForcedServerUrl = document.querySelector('#WebForcedServerUrl').value || null;
                         config.WebEnableWebRtcScan = document.querySelector('#WebEnableWebRtcScan').checked;
+                        config.PluginFrameAncestors = (document.querySelector('#PluginFrameAncestors').value || '')
+                            .split(/\r?\n/)
+                            .map(function (line) { return line.trim(); })
+                            .filter(function (line) { return line.length > 0; });
 
                         if (document.querySelector('.defaultHiddenLibraryCb') != null) {
                             config.DefaultHiddenLibraryIds = Array.prototype.slice.call(

@@ -20,9 +20,6 @@ public class MoonfinPluginsController : ControllerBase
 {
     private const int MaxDataBytes = 256 * 1024;
 
-    private const string ClientPagePolicy =
-        "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'; frame-ancestors 'self'; object-src 'none'; base-uri 'self'";
-
     private static readonly IReadOnlyDictionary<string, string> ContentTypes =
         new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
         {
@@ -69,9 +66,10 @@ public class MoonfinPluginsController : ControllerBase
         });
     }
 
-    // The plugin WebView sends Authorization only on the first page load, so client files are
-    // anonymous. Anything outside that plugin's client folder stays unreadable. A root-level
-    // client.html or client.js is the one exception: that file only, never the plugin root.
+    // The plugin WebView sends Authorization only on the first page load, and MoFin web embeds
+    // the same files in a sandboxed iframe, so client files are anonymous. Anything outside that
+    // plugin's client folder stays unreadable. A root-level client.html or client.js is the one
+    // exception: that file only, never the plugin root.
     [HttpGet("Plugins/{id}/files/{**path}")]
     [AllowAnonymous]
     public IActionResult PluginFile(string id, string path)
@@ -95,15 +93,16 @@ public class MoonfinPluginsController : ControllerBase
             return MissingFile();
         }
 
-        var etag = FileEtag(new FileInfo(full));
+        var isHtml = extension.Equals(".html", StringComparison.OrdinalIgnoreCase)
+            || extension.Equals(".htm", StringComparison.OrdinalIgnoreCase);
+        var etag = FileEtag(new FileInfo(full), isHtml);
         Response.Headers["Cache-Control"] = "no-cache";
         Response.Headers["ETag"] = etag;
         Response.Headers["X-Content-Type-Options"] = "nosniff";
-        if (extension.Equals(".html", StringComparison.OrdinalIgnoreCase)
-            || extension.Equals(".htm", StringComparison.OrdinalIgnoreCase)
-            || extension.Equals(".svg", StringComparison.OrdinalIgnoreCase))
+        Response.Headers["Access-Control-Allow-Origin"] = "*";
+        if (isHtml || extension.Equals(".svg", StringComparison.OrdinalIgnoreCase))
         {
-            Response.Headers["Content-Security-Policy"] = ClientPagePolicy;
+            Response.Headers["Content-Security-Policy"] = ClientPagePolicy();
         }
 
         if (NoneMatch(etag))
@@ -111,7 +110,46 @@ public class MoonfinPluginsController : ControllerBase
             return StatusCode(StatusCodes.Status304NotModified);
         }
 
-        return PhysicalFile(full, type);
+        if (!isHtml)
+        {
+            return PhysicalFile(full, type);
+        }
+
+        string html;
+        try
+        {
+            html = System.IO.File.ReadAllText(full);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Text.DecoderFallbackException)
+        {
+            return MissingFile();
+        }
+
+        return Content(PluginClientPages.InjectBridge(html, PluginClientPages.ScriptTag(Request.PathBase.Value)), type);
+    }
+
+    /// <summary>
+    /// Public bridge for plugin pages. Native WebViews use <c>callHandler</c>; a sandboxed web
+    /// iframe uses <c>postMessage</c> and the nonce from the URL hash.
+    /// </summary>
+    [HttpGet("PluginHost/bridge.js")]
+    [AllowAnonymous]
+    public IActionResult PluginHostBridge()
+    {
+        if (PluginClientPages.BridgeBytes.Length == 0)
+        {
+            return NotFound(new { error = "File not found." });
+        }
+
+        Response.Headers["Cache-Control"] = "no-cache";
+        Response.Headers["ETag"] = PluginClientPages.BridgeEtag;
+        Response.Headers["X-Content-Type-Options"] = "nosniff";
+        if (NoneMatch(PluginClientPages.BridgeEtag))
+        {
+            return StatusCode(StatusCodes.Status304NotModified);
+        }
+
+        return File(PluginClientPages.BridgeBytes, "application/javascript");
     }
 
     [HttpGet("Plugins/{id}/Data/{key}")]
@@ -511,8 +549,25 @@ public class MoonfinPluginsController : ControllerBase
         return false;
     }
 
-    private static string FileEtag(FileInfo info) =>
-        "\"" + info.Length.ToString("x") + "-" + info.LastWriteTimeUtc.Ticks.ToString("x") + "\"";
+    private string ClientPagePolicy()
+    {
+        var provider = HttpContext.RequestServices.GetService(typeof(IPluginFrameAncestorProvider)) as IPluginFrameAncestorProvider;
+        var raw = provider != null
+            ? provider.Raw
+            : MoonfinPlugin.Instance?.Configuration?.PluginFrameAncestors;
+        return PluginClientPages.Policy(Request.Scheme + "://" + Request.Host, raw);
+    }
+
+    private static string FileEtag(FileInfo info, bool includeBridge)
+    {
+        var token = info.Length.ToString("x") + "-" + info.LastWriteTimeUtc.Ticks.ToString("x");
+        if (includeBridge)
+        {
+            token += "-" + PluginClientPages.BridgeVersion;
+        }
+
+        return "\"" + token + "\"";
+    }
 
     private static bool RequestPathAllowsFiles(string? path)
     {

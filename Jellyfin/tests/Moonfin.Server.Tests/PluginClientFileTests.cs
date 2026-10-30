@@ -12,6 +12,7 @@ using Microsoft.AspNetCore.Mvc.Routing;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using Moonfin.Server;
 using Moonfin.Server.Api;
 using Moonfin.Server.Plugins;
 using System.Text.Encodings.Web;
@@ -84,22 +85,26 @@ public class PluginClientFileTests
             var html = await client.GetAsync(hello.ClientEntryUrl);
             Assert.Equal(HttpStatusCode.OK, html.StatusCode);
             Assert.Equal("text/html; charset=utf-8", html.Content.Headers.ContentType?.ToString());
-            Assert.Equal(ClientPage(), Header(html, "Content-Security-Policy"));
+            Assert.Equal(ClientPage(app.Urls.Single()), Header(html, "Content-Security-Policy"));
             Assert.Equal("nosniff", Header(html, "X-Content-Type-Options"));
             Assert.Equal("no-cache", Header(html, "Cache-Control"));
+            Assert.Equal("*", Header(html, "Access-Control-Allow-Origin"));
             var etag = Header(html, "ETag");
             Assert.False(string.IsNullOrEmpty(etag));
             var htmlBody = await html.Content.ReadAsStringAsync();
             Assert.Contains("Hello", htmlBody, StringComparison.Ordinal);
             Assert.DoesNotContain(Secret, htmlBody, StringComparison.Ordinal);
+            Assert.Equal(1, CountOf(htmlBody, BridgeTag));
+            Assert.StartsWith(BridgeTag, htmlBody, StringComparison.Ordinal);
 
             var script = await client.GetAsync("/Moonfin/Plugins/hello/files/client/app.js");
             Assert.Equal(HttpStatusCode.OK, script.StatusCode);
             Assert.Equal("application/javascript", script.Content.Headers.ContentType?.ToString());
             Assert.Equal("nosniff", Header(script, "X-Content-Type-Options"));
             Assert.Equal("no-cache", Header(script, "Cache-Control"));
+            Assert.Equal("*", Header(script, "Access-Control-Allow-Origin"));
             Assert.Equal(string.Empty, Header(script, "Content-Security-Policy"));
-            Assert.Contains("hello-app", await script.Content.ReadAsStringAsync(), StringComparison.Ordinal);
+            Assert.Equal("console.log('hello-app');", await script.Content.ReadAsStringAsync());
 
             using var cachedRequest = new HttpRequestMessage(HttpMethod.Get, hello.ClientEntryUrl);
             cachedRequest.Headers.TryAddWithoutValidation("If-None-Match", etag);
@@ -113,6 +118,7 @@ public class PluginClientFileTests
             var disabled = await client.GetAsync("/Moonfin/Plugins/silent/files/client/index.html");
             var dormant = await client.GetAsync("/Moonfin/Plugins/need/files/client/index.html");
             Assert.Equal(HttpStatusCode.NotFound, unknown.StatusCode);
+            Assert.Equal(string.Empty, Header(unknown, "Access-Control-Allow-Origin"));
             await AssertSame(unknown, disabled);
             await AssertSame(unknown, dormant);
 
@@ -158,6 +164,9 @@ public class PluginClientFileTests
             Assert.Equal(HttpStatusCode.Unauthorized, data.StatusCode);
             Assert.Equal(HttpStatusCode.Unauthorized, proxy.StatusCode);
             Assert.Equal(HttpStatusCode.Unauthorized, catchAll.StatusCode);
+            Assert.Equal(string.Empty, Header(data, "Access-Control-Allow-Origin"));
+            Assert.Equal(string.Empty, Header(proxy, "Access-Control-Allow-Origin"));
+            Assert.Equal(string.Empty, Header(catchAll, "Access-Control-Allow-Origin"));
             Assert.DoesNotContain("Hello", await catchAll.Content.ReadAsStringAsync(), StringComparison.Ordinal);
         }
         finally
@@ -230,7 +239,7 @@ public class PluginClientFileTests
 
             var rootHtml = await client.GetAsync(rooty.ClientEntryUrl);
             Assert.Equal(HttpStatusCode.OK, rootHtml.StatusCode);
-            Assert.Equal(ClientPage(), Header(rootHtml, "Content-Security-Policy"));
+            Assert.Equal(ClientPage(app.Urls.Single()), Header(rootHtml, "Content-Security-Policy"));
             Assert.Contains("ROOTPAGE", await rootHtml.Content.ReadAsStringAsync(), StringComparison.Ordinal);
             var rootJs = await client.GetAsync("/Moonfin/Plugins/rooty/files/app.js");
             Assert.Equal(HttpStatusCode.OK, rootJs.StatusCode);
@@ -295,9 +304,11 @@ public class PluginClientFileTests
             var svg = await client.GetAsync("/Moonfin/Plugins/edge/files/client/icon.svg");
             Assert.Equal(HttpStatusCode.OK, svg.StatusCode);
             Assert.Equal("image/svg+xml", svg.Content.Headers.ContentType?.ToString());
-            Assert.Equal(ClientPage(), Header(svg, "Content-Security-Policy"));
+            Assert.Equal(ClientPage(app.Urls.Single()), Header(svg, "Content-Security-Policy"));
             Assert.Equal("nosniff", Header(svg, "X-Content-Type-Options"));
             Assert.Equal("no-cache", Header(svg, "Cache-Control"));
+            Assert.Equal("*", Header(svg, "Access-Control-Allow-Origin"));
+            Assert.Equal("<svg xmlns=\"http://www.w3.org/2000/svg\"></svg>", await svg.Content.ReadAsStringAsync());
 
             await AssertMissing(client, "/Moonfin/Plugins/edge/files/client/linked.js", Secret);
             await AssertMissing(client, "/Moonfin/Plugins/edge/files/client/linked/secret.txt", Secret);
@@ -374,6 +385,14 @@ public class PluginClientFileTests
                 continue;
             }
 
+            if (method.Name == nameof(MoonfinPluginsController.PluginHostBridge))
+            {
+                Assert.NotEmpty(anonymous);
+                Assert.Empty(authorize);
+                Assert.Equal("PluginHost/bridge.js", Assert.Single(method.GetCustomAttributes<HttpGetAttribute>()).Template);
+                continue;
+            }
+
             Assert.Empty(anonymous);
             var auth = Assert.Single(authorize);
             var elevated = method.Name is nameof(MoonfinPluginsController.Install)
@@ -389,6 +408,128 @@ public class PluginClientFileTests
         Assert.Equal(
             new[] { "Plugins/{id}/{**path}" },
             dispatch.GetCustomAttributes(inherit: true).OfType<HttpMethodAttribute>().Select(attribute => attribute.Template).Distinct());
+    }
+
+    [Fact]
+    public void FrameAncestorOriginsDropPathsWildcardsAndJunk()
+    {
+        var kept = PluginConfiguration.NormalizeFrameAncestors(new[]
+        {
+            "https://web.example.com",
+            "https://web.example.com/moonfin",
+            "https://*.example.com",
+            "http://127.0.0.1:8096",
+            "javascript:alert(1)",
+            "https://evil.example.com/",
+            "not a url",
+            "HTTPS://Web.Example.com",
+            "https://web.example.com",
+            " http://localhost:8080 ",
+        });
+
+        Assert.Equal(
+            new[] { "https://web.example.com", "http://127.0.0.1:8096", "http://localhost:8080" },
+            kept);
+    }
+
+    [Fact]
+    public async Task SandboxedWebHostGetsOneBridgeScriptAndALockedDownPagePolicy()
+    {
+        var root = Directory.CreateDirectory(Path.Combine(Path.GetTempPath(), "moonfin-files-" + Guid.NewGuid().ToString("N")));
+        WebApplication? app = null;
+        try
+        {
+            const string page = "<!DOCTYPE html><header>not-head</header><head lang=\"en\"><title>Embed</title></head><body>EMBEDPAGE</body><head><title>second</title></head>";
+            WritePlugin(root.FullName, "embed", ClientManifest("embed"), page);
+            File.WriteAllText(Path.Combine(root.FullName, "embed", "client", "icon.svg"), "<svg xmlns=\"http://www.w3.org/2000/svg\"></svg>");
+
+            string[] configured =
+            {
+                "https://web.example.com",
+                "https://web.example.com/moonfin",
+                "https://*.example.com",
+                "http://127.0.0.1:8096",
+                "javascript:alert(1)",
+                "https://evil.example.com/",
+                "",
+            };
+
+            var catalog = new MoonbaseModuleCatalog();
+            var registry = new MoonfinPluginRegistry(catalog, root.FullName);
+            app = BuildFilesHost(registry, catalog, configured);
+            await app.StartAsync();
+            using var client = new HttpClient { BaseAddress = new Uri(app.Urls.Single()) };
+
+            var html = await client.GetAsync("/Moonfin/Plugins/embed/files/client/index.html");
+            Assert.Equal(HttpStatusCode.OK, html.StatusCode);
+            var htmlBody = await html.Content.ReadAsStringAsync();
+            var head = "<head lang=\"en\">";
+            Assert.Equal(1, CountOf(htmlBody, BridgeTag));
+            Assert.Equal(htmlBody.IndexOf(head, StringComparison.Ordinal) + head.Length, htmlBody.IndexOf(BridgeTag, StringComparison.Ordinal));
+            Assert.Contains("EMBEDPAGE", htmlBody, StringComparison.Ordinal);
+            Assert.Contains("<header>not-head</header>", htmlBody, StringComparison.Ordinal);
+            Assert.Equal("*", Header(html, "Access-Control-Allow-Origin"));
+            var policy = Header(html, "Content-Security-Policy");
+            Assert.Equal(ClientPage(app.Urls.Single(), configured), policy);
+            var origin = new Uri(app.Urls.Single()).GetLeftPart(UriPartial.Authority);
+            Assert.Contains(origin, policy, StringComparison.Ordinal);
+            Assert.Contains("frame-ancestors 'self' https://web.example.com http://127.0.0.1:8096", policy, StringComparison.Ordinal);
+            Assert.DoesNotContain("/moonfin", policy, StringComparison.Ordinal);
+            Assert.DoesNotContain("*", policy, StringComparison.Ordinal);
+            Assert.DoesNotContain("evil.example.com", policy, StringComparison.Ordinal);
+            Assert.Contains(PluginClientPages.BridgeVersion, Header(html, "ETag"), StringComparison.Ordinal);
+
+            var script = await client.GetAsync("/Moonfin/Plugins/embed/files/client/app.js");
+            Assert.Equal(HttpStatusCode.OK, script.StatusCode);
+            Assert.Equal("console.log('hello-app');", await script.Content.ReadAsStringAsync());
+            Assert.Equal("*", Header(script, "Access-Control-Allow-Origin"));
+            Assert.Equal(string.Empty, Header(script, "Content-Security-Policy"));
+
+            var svg = await client.GetAsync("/Moonfin/Plugins/embed/files/client/icon.svg");
+            Assert.Equal(HttpStatusCode.OK, svg.StatusCode);
+            Assert.Equal("<svg xmlns=\"http://www.w3.org/2000/svg\"></svg>", await svg.Content.ReadAsStringAsync());
+            Assert.Equal("*", Header(svg, "Access-Control-Allow-Origin"));
+            Assert.Equal(policy, Header(svg, "Content-Security-Policy"));
+
+            var bridge = await client.GetAsync("/Moonfin/PluginHost/bridge.js");
+            Assert.Equal(HttpStatusCode.OK, bridge.StatusCode);
+            Assert.Equal("application/javascript", bridge.Content.Headers.ContentType?.ToString());
+            Assert.Equal("nosniff", Header(bridge, "X-Content-Type-Options"));
+            Assert.Equal(PluginClientPages.BridgeEtag, Header(bridge, "ETag"));
+            var bridgeBody = await bridge.Content.ReadAsStringAsync();
+            Assert.Contains("window.MoFinHost", bridgeBody, StringComparison.Ordinal);
+            Assert.Contains("mofinNonce", bridgeBody, StringComparison.Ordinal);
+            Assert.Contains("MoFinPluginBridge", bridgeBody, StringComparison.Ordinal);
+            Assert.Contains("postMessage", bridgeBody, StringComparison.Ordinal);
+
+            using var cached = new HttpRequestMessage(HttpMethod.Get, "/Moonfin/PluginHost/bridge.js");
+            cached.Headers.TryAddWithoutValidation("If-None-Match", Header(bridge, "ETag"));
+            var notModified = await client.SendAsync(cached);
+            Assert.Equal(HttpStatusCode.NotModified, notModified.StatusCode);
+            Assert.Equal("nosniff", Header(notModified, "X-Content-Type-Options"));
+            Assert.Equal(PluginClientPages.BridgeEtag, Header(notModified, "ETag"));
+
+            var data = await client.GetAsync("/Moonfin/Plugins/embed/Data/notes");
+            var proxy = await client.PostAsync("/Moonfin/Plugins/embed/Proxy", new StringContent("{}", Encoding.UTF8, "application/json"));
+            var route = await client.GetAsync("/Moonfin/Plugins/embed/rows");
+            Assert.Equal(HttpStatusCode.Unauthorized, data.StatusCode);
+            Assert.Equal(HttpStatusCode.Unauthorized, proxy.StatusCode);
+            Assert.Equal(HttpStatusCode.Unauthorized, route.StatusCode);
+            Assert.Equal(string.Empty, Header(data, "Access-Control-Allow-Origin"));
+            Assert.Equal(string.Empty, Header(proxy, "Access-Control-Allow-Origin"));
+            Assert.Equal(string.Empty, Header(route, "Access-Control-Allow-Origin"));
+            Assert.Equal(string.Empty, Header(bridge, "Access-Control-Allow-Origin"));
+        }
+        finally
+        {
+            if (app != null)
+            {
+                await app.StopAsync();
+                await app.DisposeAsync();
+            }
+
+            Directory.Delete(root.FullName, recursive: true);
+        }
     }
 
     private static PluginListResponse List(MoonfinPluginRegistry registry, MoonbaseModuleCatalog catalog)
@@ -431,8 +572,23 @@ public class PluginClientFileTests
         return await reader.ReadToEndAsync();
     }
 
-    private static string ClientPage() =>
-        "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'; frame-ancestors 'self'; object-src 'none'; base-uri 'self'";
+    private const string BridgeTag = "<script src=\"/Moonfin/PluginHost/bridge.js\"></script>";
+
+    private static string ClientPage(string baseUrl, params string[] frameAncestors) =>
+        PluginClientPages.Policy(new Uri(baseUrl).GetLeftPart(UriPartial.Authority), frameAncestors);
+
+    private static int CountOf(string haystack, string needle)
+    {
+        var count = 0;
+        var index = 0;
+        while ((index = haystack.IndexOf(needle, index, StringComparison.Ordinal)) >= 0)
+        {
+            count++;
+            index += needle.Length;
+        }
+
+        return count;
+    }
 
     private static string ClientManifest(string id, string extra = "") =>
         "{\"id\":\"" + id + "\",\"name\":\"" + id + "\",\"version\":\"1.0.0\",\"description\":\"Hi\",\"provides\":[]," + extra + "\"slots\":[\"homeRow\"],\"client\":{\"html\":\"client/index.html\",\"js\":\"client/app.js\"},\"minHostApi\":1}";
@@ -469,7 +625,10 @@ public class PluginClientFileTests
         File.WriteAllText(Path.Combine(root, id, "readme.txt"), "README");
     }
 
-    private static WebApplication BuildFilesHost(MoonfinPluginRegistry registry, MoonbaseModuleCatalog catalog)
+    private static WebApplication BuildFilesHost(
+        MoonfinPluginRegistry registry,
+        MoonbaseModuleCatalog catalog,
+        IReadOnlyList<string>? frameAncestors = null)
     {
         var builder = WebApplication.CreateBuilder();
         builder.Logging.ClearProviders();
@@ -486,6 +645,10 @@ public class PluginClientFileTests
         builder.Services.AddSingleton<IStartupFilter, PluginClientFileGuard>();
         builder.Services.AddSingleton(registry);
         builder.Services.AddSingleton(catalog);
+        if (frameAncestors != null)
+        {
+            builder.Services.AddSingleton<IPluginFrameAncestorProvider>(new FixedFrameAncestors(frameAncestors));
+        }
         builder.Services.AddControllers().ConfigureApplicationPartManager(manager =>
         {
             manager.ApplicationParts.Clear();
@@ -513,6 +676,13 @@ public class PluginClientFileTests
     private sealed class OnlyPluginController : ControllerFeatureProvider
     {
         protected override bool IsController(TypeInfo typeInfo) => typeInfo.AsType() == typeof(MoonfinPluginsController);
+    }
+
+    private sealed class FixedFrameAncestors : IPluginFrameAncestorProvider
+    {
+        public FixedFrameAncestors(IReadOnlyList<string> raw) => Raw = raw;
+
+        public IReadOnlyList<string>? Raw { get; }
     }
 
     private sealed class NoUserHandler : AuthenticationHandler<AuthenticationSchemeOptions>
