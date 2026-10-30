@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="color-scheme" content="dark" />
+  <title>ROM Manager</title>
+  <link rel="stylesheet" href="app.css" />
+</head>
+<body>
+  <div id="app" class="app">
+    <header class="top">
+      <div class="brand" aria-label="MoFin Emulation">
+        <svg class="mark" viewBox="0 0 32 32" aria-hidden="true">
+          <rect width="32" height="32" rx="8" />
+          <path d="M8 12h4v8H8zm12 0h4v8h-4zM12 15h8v2h-8z" />
+        </svg>
+        <span class="word"><b>MoFin</b> Emulation</span>
+      </div>
+      <label class="search">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6" /><path d="M16 16l5 5" /></svg>
+        <input id="search" type="search" autocomplete="off" placeholder="Search games, platforms, genres..." />
+      </label>
+      <button id="gear" class="icon-btn" type="button" aria-label="Settings" data-nav>
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3" /><path d="M12 3v2.2M12 18.8V21M3 12h2.2M18.8 12H21M5.6 5.6l1.6 1.6M16.8 16.8l1.6 1.6M18.4 5.6l-1.6 1.6M7.2 16.8l-1.6 1.6" /></svg>
+      </button>
+    </header>
+    <div class="shell">
+      <nav id="sidebar" class="sidebar" aria-label="Library"></nav>
+      <main id="main"></main>
+    </div>
+    <nav id="tabbar" class="tabbar" aria-label="Primary"></nav>
+  </div>
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <div id="modal"></div>
+  <script src="format.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

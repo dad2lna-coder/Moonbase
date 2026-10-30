@@ -1,0 +1,35 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.12.0" />
+    <PackageReference Include="xunit" Version="2.9.3" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="3.0.2">
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+      <PrivateAssets>all</PrivateAssets>
+    </PackageReference>
+    <!--
+      Reading plugin config goes through MoonfinPluginRegistry.Root, whose getter also
+      references the Jellyfin data-folder fallback. That type lives in Jellyfin.Controller,
+      which Moonfin.Server does not copy (ExcludeAssets=runtime). Same reference the server tests use.
+    -->
+    <PackageReference Include="Jellyfin.Controller" Version="10.10.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\plugins\rom-manager\Moonfin.Plugin.RomManager.csproj" />
+    <ProjectReference Include="..\..\backend\Moonfin.Server.csproj" />
+  </ItemGroup>
+
+</Project>
