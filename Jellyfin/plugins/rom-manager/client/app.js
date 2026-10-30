@@ -143,6 +143,11 @@
     if (total) total.textContent = String(state.totals.games || 0);
   }
 
+  function banner() {
+    if (!state.indexing) return null;
+    return el("div", { class: "banner", text: "Library is being indexed" });
+  }
+
   function clearMain(main) {
     var note = banner();
     main.replaceChildren();
@@ -471,9 +476,6 @@
     actions.appendChild(el("button", { type: "button", class: "primary", "data-nav": "1", "data-play": "hero", "aria-disabled": "true", text: "Play", title: "Coming soon" }));
     actions.appendChild(el("button", { type: "button", class: "text-btn", "data-nav": "1", "data-fav": game.key, text: isFav(game.key) ? "Favorited" : "Favorite" }));
     actions.appendChild(el("button", { type: "button", class: "text-btn", "data-nav": "1", "data-collect": game.key, text: "Add to Collection" }));
-    if (state.isAdmin) {
-      actions.appendChild(el("button", { type: "button", class: "text-btn", "data-nav": "1", "data-trash-best": "1", text: "More" }));
-    }
     copy.appendChild(actions);
     body.appendChild(copy);
     hero.appendChild(body);
@@ -543,17 +545,6 @@
       info.appendChild(el("p", { class: "tiny", text: fmt.joinParts([game.system, version.region, version.revision, (version.ext || "").toUpperCase(), fmt.formatBytes(version.sizeBytes)]) }));
       var play = el("button", { type: "button", class: "primary", "data-nav": "1", "data-play": String(index), "aria-disabled": "true", text: "Play", title: "Coming soon" });
       info.appendChild(play);
-      if (state.isAdmin) {
-        info.appendChild(el("button", {
-          type: "button",
-          class: "text-btn",
-          "data-nav": "1",
-          "data-trash": version.p,
-          "data-title": fmt.versionName(version.file) || game.title,
-          "data-bytes": String(version.sizeBytes || 0),
-          text: "Move to trash"
-        }));
-      }
       card.appendChild(info);
       wrap.appendChild(card);
     });
@@ -578,7 +569,7 @@
           var label = el("label", { class: "check" });
           var input = el("input", { type: "checkbox", "data-dup": member.p, "data-nav": "1" });
           input.setAttribute("data-title", member.title || member.p);
-          input.setAttribute("data-system", member.system || group.system || "");
+          input.setAttribute("data-row-system", member.system || group.system || "");
           input.setAttribute("data-bytes", String(member.sizeBytes || 0));
           label.appendChild(input);
           var text = (member.title || member.file || member.p) + " · " + fmt.formatBytes(member.sizeBytes);
@@ -620,7 +611,7 @@
           "data-nav": "1",
           "data-restore": item.p,
           "data-title": item.title || item.p,
-          "data-system": item.system || "",
+          "data-row-system": item.system || "",
           "data-bytes": String(item.sizeBytes || 0),
           text: "Restore"
         }));
@@ -736,6 +727,30 @@
     return warning.message || warning.warning || warning.text || warning.path || JSON.stringify(warning);
   }
 
+  function watchDialog(cancel, ok, onCancel) {
+    function onKey(event) {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        onCancel();
+        return;
+      }
+      var step = 0;
+      if (event.key === "Tab") step = event.shiftKey ? -1 : 1;
+      else if (event.key === "ArrowRight" || event.key === "ArrowDown") step = 1;
+      else if (event.key === "ArrowLeft" || event.key === "ArrowUp") step = -1;
+      if (!step) return;
+      var items = [cancel, ok];
+      var index = items.indexOf(document.activeElement);
+      if (index < 0) index = 0;
+      event.preventDefault();
+      event.stopPropagation();
+      items[(index + step + items.length) % items.length].focus();
+    }
+    document.addEventListener("keydown", onKey, true);
+    cancel.focus();
+    return function () { document.removeEventListener("keydown", onKey, true); };
+  }
+
   function confirmDialog(opts) {
     return new Promise(function (resolve) {
       var previous = document.activeElement;
@@ -766,27 +781,16 @@
       dialog.appendChild(actions);
       back.appendChild(dialog);
       document.getElementById("modal").replaceChildren(back);
+      var unwatch = function () {};
       function close(value) {
-        document.removeEventListener("keydown", onKey, true);
+        unwatch();
         document.getElementById("modal").replaceChildren();
         resolve(value);
         if (previous && previous.focus) previous.focus();
       }
-      function onKey(event) {
-        if (event.key === "Escape") {
-          event.preventDefault();
-          close(false);
-        } else if (event.key === "Tab") {
-          var items = [cancel, ok];
-          var index = items.indexOf(document.activeElement);
-          event.preventDefault();
-          items[(index + (event.shiftKey ? -1 : 1) + items.length) % items.length].focus();
-        }
-      }
-      document.addEventListener("keydown", onKey, true);
+      unwatch = watchDialog(cancel, ok, function () { close(false); });
       cancel.addEventListener("click", function () { close(false); });
       ok.addEventListener("click", function () { close(true); });
-      cancel.focus();
     });
   }
 
@@ -828,7 +832,13 @@
       if (!again) return;
       ack = true;
     }
-    var result = await apiRaw("trash", { paths: paths, ackDeps: ack });
+    var result;
+    try {
+      result = await apiRaw("trash", { paths: paths, ackDeps: ack });
+    } catch (error) {
+      showToast(error.message || "Could not move to trash.");
+      return;
+    }
     if (result && result.needsAck && !ack) {
       var third = await confirmDialog({
         title: "Other games need these ROMs",
@@ -838,7 +848,12 @@
         danger: true
       });
       if (!third) return;
-      result = await apiRaw("trash", { paths: paths, ackDeps: true });
+      try {
+        result = await apiRaw("trash", { paths: paths, ackDeps: true });
+      } catch (error) {
+        showToast(error.message || "Could not move to trash.");
+        return;
+      }
     }
     if (!result || result.ok === false) {
       showToast((result && result.error) || "Could not move to trash.");
@@ -858,7 +873,13 @@
       confirm: "Restore"
     });
     if (!ok) return;
-    var result = await apiRaw("restore", { paths: [row.p] });
+    var result;
+    try {
+      result = await apiRaw("restore", { paths: [row.p] });
+    } catch (error) {
+      showToast(error.message || "Could not restore.");
+      return;
+    }
     if (!result || result.ok === false) {
       showToast((result && result.error) || "Could not restore.");
       return;
@@ -873,7 +894,7 @@
       return {
         p: input.getAttribute("data-dup"),
         title: input.getAttribute("data-title"),
-        system: input.getAttribute("data-system"),
+        system: input.getAttribute("data-row-system"),
         sizeBytes: Number(input.getAttribute("data-bytes")) || 0
       };
     });
@@ -904,7 +925,9 @@
       dialog.appendChild(actions);
       back.appendChild(dialog);
       document.getElementById("modal").replaceChildren(back);
+      var unwatch = function () {};
       function close() {
+        unwatch();
         document.getElementById("modal").replaceChildren();
         resolve();
       }
@@ -933,7 +956,7 @@
         save("collections", state.collections);
         close();
       });
-      cancel.focus();
+      unwatch = watchDialog(cancel, create, close);
     });
   }
 
@@ -951,8 +974,11 @@
     dialog.appendChild(actions);
     back.appendChild(dialog);
     document.getElementById("modal").replaceChildren(back);
-    cancel.focus();
-    function close() { document.getElementById("modal").replaceChildren(); }
+    var unwatch = function () {};
+    function close() {
+      unwatch();
+      document.getElementById("modal").replaceChildren();
+    }
     cancel.addEventListener("click", close);
     ok.addEventListener("click", function () {
       var name = field.value.trim();
@@ -964,6 +990,7 @@
       close();
       render();
     });
+    unwatch = watchDialog(cancel, ok, close);
   }
 
   function bestVersion(game) {
@@ -997,6 +1024,17 @@
       playGame(state.current, version);
       return;
     }
+    var restore = event.target.closest("[data-restore]");
+    if (restore) {
+      restoreOne({
+        p: restore.getAttribute("data-restore"),
+        title: restore.getAttribute("data-title"),
+        system: restore.getAttribute("data-row-system"),
+        sizeBytes: Number(restore.getAttribute("data-bytes")) || 0
+      });
+      return;
+    }
+    if (event.target.closest("[data-dup]") || event.target.closest("label.check")) return;
     var system = event.target.closest("[data-system]");
     if (system) {
       go({ name: "library", system: system.getAttribute("data-system") || "" });
@@ -1018,32 +1056,7 @@
       }).catch(function (error) { showToast(error.message); });
       return;
     }
-    var trash = event.target.closest("[data-trash]");
-    if (trash) {
-      moveToTrash([{
-        p: trash.getAttribute("data-trash"),
-        title: trash.getAttribute("data-title"),
-        system: (state.current && state.current.system) || "",
-        sizeBytes: Number(trash.getAttribute("data-bytes")) || 0
-      }]);
-      return;
-    }
-    if (event.target.closest("[data-trash-best]") && state.current) {
-      var version = bestVersion(state.current);
-      if (!version) return;
-      moveToTrash([{ p: version.p, title: state.current.title, system: state.current.system, sizeBytes: version.sizeBytes }]);
-      return;
-    }
     if (event.target.closest("[data-trash-selected]")) { moveToTrash(selectedDuplicates()); return; }
-    var restore = event.target.closest("[data-restore]");
-    if (restore) {
-      restoreOne({
-        p: restore.getAttribute("data-restore"),
-        title: restore.getAttribute("data-title"),
-        system: restore.getAttribute("data-system"),
-        sizeBytes: Number(restore.getAttribute("data-bytes")) || 0
-      });
-    }
   });
 
   document.getElementById("main").addEventListener("change", function (event) {

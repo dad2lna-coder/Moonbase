@@ -133,6 +133,10 @@ public sealed class RomChannel : IDisposable
     public const int MaxDataUriChars = 240_000;
     public const int MaxCovers = 24;
     public const int MaxPaths = 50;
+    public const int CoverParallelism = 4;
+    public static readonly TimeSpan ConnectTimeout = TimeSpan.FromSeconds(4);
+    public static readonly TimeSpan RequestTimeout = TimeSpan.FromSeconds(20);
+    public static readonly TimeSpan IndexTimeout = TimeSpan.FromSeconds(60);
 
     public static readonly IReadOnlySet<string> AllowedPaths = new HashSet<string>(StringComparer.Ordinal)
     {
@@ -148,10 +152,14 @@ public sealed class RomChannel : IDisposable
     };
 
     private readonly HttpClient _http;
+    private readonly HttpMessageHandler? _ownedHandler;
     private readonly SemaphoreSlim _indexGate = new(1, 1);
+    private readonly object _publish = new();
     private readonly CoverMemory _covers = new();
     private LibrarySnapshot? _snapshot;
     private string? _etag;
+    private int _generation;
+    private int _disposed;
 
     public RomChannel(HttpMessageHandler? handler = null)
     {
@@ -161,8 +169,10 @@ public sealed class RomChannel : IDisposable
             {
                 AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate,
                 AllowAutoRedirect = false,
+                ConnectTimeout = ConnectTimeout,
                 PooledConnectionLifetime = TimeSpan.FromMinutes(2),
             };
+            _ownedHandler = handler;
         }
         else if (handler is HttpClientHandler httpHandler)
         {
@@ -172,26 +182,34 @@ public sealed class RomChannel : IDisposable
 
         _http = new HttpClient(handler, disposeHandler: false)
         {
-            Timeout = TimeSpan.FromSeconds(90),
+            Timeout = Timeout.InfiniteTimeSpan,
         };
     }
 
     public Func<DateTimeOffset> Now { get; set; } = static () => DateTimeOffset.UtcNow;
 
-    public void Dispose() => _http.Dispose();
-
-    public void Invalidate()
+    public void Dispose()
     {
-        _indexGate.Wait();
-        try
+        if (Interlocked.Exchange(ref _disposed, 1) != 0)
         {
+            return;
+        }
+
+        _http.Dispose();
+        _ownedHandler?.Dispose();
+        _indexGate.Dispose();
+    }
+
+    public Task Invalidate()
+    {
+        lock (_publish)
+        {
+            _generation++;
             _snapshot = null;
             _etag = null;
         }
-        finally
-        {
-            _indexGate.Release();
-        }
+
+        return Task.CompletedTask;
     }
 
     public async Task<LibrarySnapshot> GetIndexAsync(IServiceProvider? services, CancellationToken cancellationToken)
@@ -200,46 +218,59 @@ public sealed class RomChannel : IDisposable
         await _indexGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            if (_snapshot != null
-                && string.Equals(_snapshot.Primary, primary, StringComparison.Ordinal)
-                && Now() - _snapshot.FetchedAt < IndexTtl)
+            LibrarySnapshot? previous;
+            int generation;
+            lock (_publish)
             {
-                return _snapshot;
-            }
-
-            var response = await SendAsync(services, HttpMethod.Get, "/api/romman/index", null, useEtag: true, cancellationToken)
-                .ConfigureAwait(false);
-            if (response.Status == (int)HttpStatusCode.NotModified && _snapshot != null)
-            {
-                _snapshot = LibrarySnapshot.Create(primary, Now(), indexing: false, _snapshot.MetaJson, _snapshot.Items);
-                return _snapshot;
-            }
-
-            if (response.Status == (int)HttpStatusCode.Accepted)
-            {
-                if (_snapshot != null)
+                generation = _generation;
+                previous = _snapshot;
+                if (previous != null
+                    && string.Equals(previous.Primary, primary, StringComparison.Ordinal)
+                    && Now() - previous.FetchedAt < IndexTtl)
                 {
-                    _snapshot = LibrarySnapshot.Create(primary, Now(), indexing: true, _snapshot.MetaJson, _snapshot.Items);
-                    return _snapshot;
+                    return previous;
                 }
-
-                _snapshot = LibrarySnapshot.Create(primary, Now(), indexing: true, null, Array.Empty<RomEntry>());
-                return _snapshot;
             }
 
-            if (response.Status is < 200 or > 299)
+            var response = await SendAsync(services, HttpMethod.Get, "/api/romman/index", null, useEtag: true, cancellationToken, IndexTimeout)
+                .ConfigureAwait(false);
+            LibrarySnapshot built;
+            string? etag = null;
+            if (response.Status == (int)HttpStatusCode.NotModified && previous != null)
+            {
+                built = LibrarySnapshot.Create(primary, Now(), indexing: false, previous.MetaJson, previous.Items);
+            }
+            else if (response.Status == (int)HttpStatusCode.Accepted)
+            {
+                built = previous != null
+                    ? LibrarySnapshot.Create(primary, Now(), indexing: true, previous.MetaJson, previous.Items)
+                    : LibrarySnapshot.Create(primary, Now(), indexing: true, null, Array.Empty<RomEntry>());
+            }
+            else if (response.Status is < 200 or > 299)
             {
                 throw new ChannelException("Channel Manager returned " + response.Status + ".");
             }
-
-            if (!string.IsNullOrEmpty(response.Etag))
+            else
             {
-                _etag = response.Etag;
+                var items = RomIndex.Parse(response.Body, out var meta);
+                built = LibrarySnapshot.Create(primary, Now(), indexing: false, meta, items);
+                etag = response.Etag;
             }
 
-            var items = RomIndex.Parse(response.Body, out var meta);
-            _snapshot = LibrarySnapshot.Create(primary, Now(), indexing: false, meta, items);
-            return _snapshot;
+            lock (_publish)
+            {
+                if (_generation == generation)
+                {
+                    if (!string.IsNullOrEmpty(etag))
+                    {
+                        _etag = etag;
+                    }
+
+                    _snapshot = built;
+                }
+            }
+
+            return built;
         }
         finally
         {
@@ -408,7 +439,8 @@ public sealed class RomChannel : IDisposable
         string relative,
         byte[]? body,
         bool useEtag,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        TimeSpan? budget = null)
     {
         var path = relative.Split('?', 2)[0];
         if (!AllowedPaths.Contains(path))
@@ -418,6 +450,8 @@ public sealed class RomChannel : IDisposable
 
         var bases = Bases(services);
         Exception? last = null;
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeout.CancelAfter(budget ?? RequestTimeout);
         for (var i = 0; i < bases.Count; i++)
         {
             try
@@ -436,16 +470,16 @@ public sealed class RomChannel : IDisposable
                     request.Content.Headers.ContentType = new MediaTypeHeaderValue("application/json") { CharSet = "utf-8" };
                 }
 
-                using var response = await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
+                using var response = await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, timeout.Token).ConfigureAwait(false);
                 var text = response.StatusCode == HttpStatusCode.NotModified
                     ? string.Empty
-                    : await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+                    : await response.Content.ReadAsStringAsync(timeout.Token).ConfigureAwait(false);
                 return new ChannelResult((int)response.StatusCode, text, ReadEtag(response));
             }
             catch (Exception ex) when (IsTransport(ex) && !cancellationToken.IsCancellationRequested)
             {
                 last = ex;
-                if (i < bases.Count - 1)
+                if (!timeout.IsCancellationRequested && i < bases.Count - 1)
                 {
                     continue;
                 }
@@ -464,6 +498,8 @@ public sealed class RomChannel : IDisposable
         }
 
         var bases = Bases(services);
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeout.CancelAfter(RequestTimeout);
         for (var i = 0; i < bases.Count; i++)
         {
             try
@@ -471,21 +507,57 @@ public sealed class RomChannel : IDisposable
                 using var request = new HttpRequestMessage(HttpMethod.Get, bases[i].TrimEnd('/') + relative);
                 request.Headers.TryAddWithoutValidation("Accept-Encoding", "gzip");
                 request.Headers.Accept.ParseAdd("image/jpeg");
-                using var response = await _http.SendAsync(request, cancellationToken).ConfigureAwait(false);
+                using var response = await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, timeout.Token).ConfigureAwait(false);
                 if (response.StatusCode != HttpStatusCode.OK)
                 {
                     return null;
                 }
 
-                var bytes = await response.Content.ReadAsByteArrayAsync(cancellationToken).ConfigureAwait(false);
-                return bytes;
+                if (response.Content.Headers.ContentLength is long length && length > MaxImageBytes)
+                {
+                    return null;
+                }
+
+                return await ReadAtMostAsync(response.Content, MaxImageBytes, timeout.Token).ConfigureAwait(false);
             }
-            catch (Exception ex) when (IsTransport(ex) && i < bases.Count - 1 && !cancellationToken.IsCancellationRequested)
+            catch (Exception ex) when (IsTransport(ex) && !cancellationToken.IsCancellationRequested)
             {
+                if (!timeout.IsCancellationRequested && i < bases.Count - 1)
+                {
+                    continue;
+                }
+
+                return null;
             }
         }
 
         return null;
+    }
+
+    private static async Task<byte[]?> ReadAtMostAsync(HttpContent content, int maxBytes, CancellationToken cancellationToken)
+    {
+        await using var stream = await content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
+        var buffer = new byte[maxBytes + 1];
+        var read = 0;
+        while (read <= maxBytes)
+        {
+            var n = await stream.ReadAsync(buffer.AsMemory(read, buffer.Length - read), cancellationToken).ConfigureAwait(false);
+            if (n == 0)
+            {
+                break;
+            }
+
+            read += n;
+        }
+
+        if (read == 0 || read > maxBytes)
+        {
+            return null;
+        }
+
+        var exact = new byte[read];
+        buffer.AsSpan(0, read).CopyTo(exact);
+        return exact;
     }
 
     private static string? ReadEtag(HttpResponseMessage response)

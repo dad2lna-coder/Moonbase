@@ -14,7 +14,7 @@ From this folder:
 
 That builds `Moonfin.Plugin.RomManager.dll` and writes `dist/rom-manager-<version>.zip`. The zip contains only `plugin.json`, `client/`, and `server/Moonfin.Plugin.RomManager.dll`. It does not ship `Moonfin.Server.dll` or Jellyfin assemblies.
 
-`dotnet test` for `Jellyfin/server-plugin.sln` runs the xunit suite. `node --test format.test.mjs` checks the small client helpers.
+`dotnet test` for `Jellyfin/server-plugin.sln` runs the xunit suite. `node --test format.test.mjs smoke.test.mjs` checks the client helpers and that every page renders. The smoke test's jsdom dependency stays out of the zip.
 
 ## Install
 
@@ -38,7 +38,7 @@ To point at a different base URL, `PUT /Moonfin/Admin/Plugins/rom-manager/Config
 
 - Move to trash lists every title, platform, and size, plus the total. Cancel is focused. If other games depend on the ROM, a second confirm is required.
 - Restore asks first too.
-- Identical copies are never pre-selected. **Best Experience** is a label, not a choice the plugin makes for you.
+- Identical copies are never pre-selected. **Best Experience** is a label, not a choice the plugin makes for you. Trash is only the copies you tick on the Duplicates page.
 - Admin buttons are hidden for everyone else. The module checks `IsAdmin` again.
 - Cover paths are checked before they are forwarded (no `..`, no absolute path, two segments, or three for a trash path). Images over 300 KB are dropped, and a response stays small enough for the plugin bridge.
 - Play is one function, `playGame`, and it only says playback is coming soon.

@@ -420,7 +420,7 @@ public static class RomIndex
 
     public static List<GameRecord> Group(IReadOnlyList<RomEntry> items)
     {
-        var byVersion = new Dictionary<long, List<RomEntry>>();
+        var byVersion = new Dictionary<(string System, long Group), List<RomEntry>>(VersionKeyComparer.Instance);
         foreach (var item in items)
         {
             if (item.VersionGroup == 0)
@@ -428,17 +428,18 @@ public static class RomIndex
                 continue;
             }
 
-            if (!byVersion.TryGetValue(item.VersionGroup, out var list))
+            var key = VersionKey(item);
+            if (!byVersion.TryGetValue(key, out var list))
             {
                 list = new List<RomEntry>();
-                byVersion[item.VersionGroup] = list;
+                byVersion[key] = list;
             }
 
             list.Add(item);
         }
 
         var games = new List<GameRecord>();
-        var emitted = new HashSet<long>();
+        var emitted = new HashSet<(string System, long Group)>(VersionKeyComparer.Instance);
         foreach (var item in items)
         {
             if (item.VersionGroup == 0)
@@ -447,15 +448,51 @@ public static class RomIndex
                 continue;
             }
 
-            if (!emitted.Add(item.VersionGroup))
+            var key = VersionKey(item);
+            if (!emitted.Add(key))
             {
                 continue;
             }
 
-            games.Add(GameRecord.Create(byVersion[item.VersionGroup]));
+            games.Add(GameRecord.Create(byVersion[key]));
         }
 
         return games;
+    }
+
+    public static int CountVersionGroups(IReadOnlyList<RomEntry> items, string? platform)
+    {
+        var ids = new HashSet<(string System, long Group)>(VersionKeyComparer.Instance);
+        foreach (var item in items)
+        {
+            if (item.VersionGroup == 0)
+            {
+                continue;
+            }
+
+            if (!string.IsNullOrWhiteSpace(platform)
+                && !string.Equals(item.Platform, platform.Trim(), StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            ids.Add(VersionKey(item));
+        }
+
+        return ids.Count;
+    }
+
+    private static (string System, long Group) VersionKey(RomEntry item) => (item.Platform ?? string.Empty, item.VersionGroup);
+
+    private sealed class VersionKeyComparer : IEqualityComparer<(string System, long Group)>
+    {
+        public static readonly VersionKeyComparer Instance = new();
+
+        public bool Equals((string System, long Group) x, (string System, long Group) y) =>
+            x.Group == y.Group && string.Equals(x.System, y.System, StringComparison.OrdinalIgnoreCase);
+
+        public int GetHashCode((string System, long Group) obj) =>
+            HashCode.Combine(StringComparer.OrdinalIgnoreCase.GetHashCode(obj.System ?? string.Empty), obj.Group);
     }
 
     private static string? Str(JsonElement el, string name)
@@ -755,27 +792,8 @@ public static class RomQuery
         return groups;
     }
 
-    public static int VersionGroupCount(IReadOnlyList<RomEntry> items, string? platform)
-    {
-        var ids = new HashSet<long>();
-        foreach (var item in items)
-        {
-            if (item.VersionGroup == 0)
-            {
-                continue;
-            }
-
-            if (!string.IsNullOrWhiteSpace(platform)
-                && !string.Equals(item.Platform, platform.Trim(), StringComparison.OrdinalIgnoreCase))
-            {
-                continue;
-            }
-
-            ids.Add(item.VersionGroup);
-        }
-
-        return ids.Count;
-    }
+    public static int VersionGroupCount(IReadOnlyList<RomEntry> items, string? platform) =>
+        RomIndex.CountVersionGroups(items, platform);
 
     public static List<GameRecord> Related(GameRecord game, IReadOnlyList<GameRecord> games, int take)
     {

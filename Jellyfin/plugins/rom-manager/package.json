@@ -1,0 +1,10 @@
+{
+  "private": true,
+  "description": "Dev-only checks for the ROM Manager page. Not shipped in the plugin zip.",
+  "scripts": {
+    "test": "node --test format.test.mjs smoke.test.mjs"
+  },
+  "devDependencies": {
+    "jsdom": "^25.0.1"
+  }
+}

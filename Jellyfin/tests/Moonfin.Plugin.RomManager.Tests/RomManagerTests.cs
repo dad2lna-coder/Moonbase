@@ -90,6 +90,23 @@ public class RomLibraryTests
         Assert.Empty(RomQuery.IdenticalCopies(items, "SNES"));
     }
 
+    [Fact]
+    public void VersionGroupsStayInsideOneSystem()
+    {
+        var items = RomIndex.Parse("""
+        {"items":[
+          {"p":"NES/A","s":"NES","t":"Alpha","f":"A.nes","mg":4,"km":1},
+          {"p":"SNES/A","s":"SNES","t":"Alpha","f":"A.sfc","mg":4,"km":1}
+        ]}
+        """, out _);
+        var games = RomIndex.Group(items);
+        Assert.Equal(2, games.Count);
+        Assert.Contains(games, game => game.Key == "m:NES/A" && game.Platform == "NES");
+        Assert.Contains(games, game => game.Key == "m:SNES/A" && game.Platform == "SNES");
+        Assert.Equal(2, RomQuery.VersionGroupCount(items, null));
+        Assert.Equal(1, RomQuery.VersionGroupCount(items, "NES"));
+    }
+
     internal const string SampleIndex = """
     {
       "meta": {"built": true},
@@ -388,6 +405,86 @@ public class RomManagerRouteTests
     }
 
     [Fact]
+    public async Task TrashDropsDuplicatePaths()
+    {
+        var handler = new RecordingHandler(call =>
+            call.Uri.AbsolutePath.EndsWith("/index")
+                ? Text(HttpStatusCode.OK, RomLibraryTests.SampleIndex)
+                : Text(HttpStatusCode.OK, """{"ok":true}"""));
+        var module = new RomManagerModule(handler);
+        var trashed = await Json(module.Trash(Req("""{"paths":["NES/Mario","NES/Mario"],"ackDeps":true}""", admin: true)));
+        Assert.Equal(1, trashed.GetProperty("moved").GetInt32());
+        var body = handler.Calls.Last(call => call.Uri.AbsolutePath.EndsWith("/delete")).Body ?? string.Empty;
+        Assert.Equal(1, body.Split("NES/Mario", StringSplitOptions.None).Length - 1);
+    }
+
+    [Fact]
+    public async Task UnexpectedFailuresStayInsideAnOkFalseBody()
+    {
+        var logs = new List<string>();
+        var services = new ServiceCollection();
+        services.AddSingleton<ILoggerFactory>(LoggerFactory.Create(builder => builder.AddProvider(new ListLog(logs))));
+        var module = new RomManagerModule(new RecordingHandler(_ => throw new InvalidOperationException("boom")));
+        var body = await Json(module.Games(Req("{}", services: services.BuildServiceProvider())));
+        Assert.False(body.GetProperty("ok").GetBoolean());
+        Assert.Equal("internal error", body.GetProperty("error").GetString());
+        Assert.DoesNotContain("boom", body.GetRawText(), StringComparison.Ordinal);
+        Assert.Contains(logs, line => line.Contains("boom", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task SystemsKeepsOnlyCountsStateAndBuiltTime()
+    {
+        var handler = new RecordingHandler(call =>
+            call.Uri.AbsolutePath.EndsWith("/status")
+                ? Text(HttpStatusCode.OK, """{"state":"ready","built":"2026-01-01T00:00:00Z","token":"secret"}""")
+                : Text(HttpStatusCode.OK, """{"meta":{"counts":{"games":2,"roms":3},"state":"ready","token":"secret","built":true},"items":[]}"""));
+        var body = await Json(new RomManagerModule(handler).Systems(Req("{}")));
+        var meta = body.GetProperty("meta");
+        Assert.True(meta.GetProperty("built").GetBoolean());
+        Assert.Equal("ready", meta.GetProperty("state").GetString());
+        Assert.Equal(2, meta.GetProperty("counts").GetProperty("games").GetInt32());
+        Assert.False(meta.TryGetProperty("token", out _));
+        var status = body.GetProperty("status");
+        Assert.Equal("ready", status.GetProperty("state").GetString());
+        Assert.Equal("2026-01-01T00:00:00Z", status.GetProperty("built").GetString());
+        Assert.False(status.TryGetProperty("token", out _));
+    }
+
+    [Fact]
+    public async Task AFailedCoverIsSkippedInsteadOfFailingThePage()
+    {
+        var handler = new RecordingHandler(call =>
+        {
+            if (call.Uri.Query.Contains("NES%2FMario", StringComparison.Ordinal) || call.Uri.Query.Contains("NES/Mario", StringComparison.Ordinal))
+            {
+                throw new HttpRequestException("down");
+            }
+
+            if (call.Uri.Query.Contains("Huge", StringComparison.Ordinal))
+            {
+                var response = new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new LengthOnlyContent(RomChannel.MaxImageBytes + 1),
+                };
+                return response;
+            }
+
+            return Jpeg(new byte[] { 0xFF, 0xD8, 0xFF, 0xD9 });
+        });
+        LengthOnlyContent.WasRead = false;
+        var body = await Json(new RomManagerModule(handler).Covers(Req("""
+        {"items":[{"p":"NES/Mario","w":200},{"p":"NES/Other","w":200},{"p":"NES/Huge","w":200}]}
+        """)));
+        Assert.True(body.GetProperty("ok").GetBoolean());
+        var covers = body.GetProperty("covers");
+        Assert.False(covers.TryGetProperty("NES/Mario", out _));
+        Assert.False(covers.TryGetProperty("NES/Huge", out _));
+        Assert.True(covers.TryGetProperty("NES/Other", out _));
+        Assert.False(LengthOnlyContent.WasRead);
+    }
+
+    [Fact]
     public async Task NoRouteCallsTheForbiddenChannelPaths()
     {
         var handler = new RecordingHandler(call =>
@@ -447,7 +544,8 @@ public class RomManagerRouteTests
         {
             if (file.Contains($"{Path.DirectorySeparatorChar}bin{Path.DirectorySeparatorChar}", StringComparison.Ordinal)
                 || file.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}", StringComparison.Ordinal)
-                || file.Contains($"{Path.DirectorySeparatorChar}dist{Path.DirectorySeparatorChar}", StringComparison.Ordinal))
+                || file.Contains($"{Path.DirectorySeparatorChar}dist{Path.DirectorySeparatorChar}", StringComparison.Ordinal)
+                || file.Contains($"{Path.DirectorySeparatorChar}node_modules{Path.DirectorySeparatorChar}", StringComparison.Ordinal))
             {
                 continue;
             }
@@ -537,6 +635,28 @@ public class RomManagerRouteTests
         return response;
     }
 
+    private sealed class LengthOnlyContent : HttpContent
+    {
+        public static bool WasRead;
+
+        public LengthOnlyContent(long length)
+        {
+            Headers.ContentLength = length;
+        }
+
+        protected override Task SerializeToStreamAsync(Stream stream, TransportContext? context)
+        {
+            WasRead = true;
+            throw new InvalidOperationException("cover body was downloaded");
+        }
+
+        protected override bool TryComputeLength(out long length)
+        {
+            length = Headers.ContentLength ?? 0;
+            return true;
+        }
+    }
+
     private sealed class RecordingHandler : HttpMessageHandler
     {
         private readonly Func<RecordedCall, HttpResponseMessage> _handle;
@@ -553,7 +673,11 @@ public class RomManagerRouteTests
                 request.Headers.AcceptEncoding.ToString(),
                 request.Headers.TryGetValues("If-None-Match", out var tags) ? string.Join(",", tags) : null,
                 body);
-            Calls.Add(call);
+            lock (Calls)
+            {
+                Calls.Add(call);
+            }
+
             return _handle(call);
         }
     }
@@ -578,7 +702,13 @@ public class RomManagerRouteTests
 
         public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
         {
-            _lines.Add(formatter(state, exception));
+            var text = formatter(state, exception);
+            if (exception != null)
+            {
+                text = text + " " + exception.Message;
+            }
+
+            _lines.Add(text);
         }
 
         private sealed class NullScope : IDisposable

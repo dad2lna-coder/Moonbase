@@ -42,6 +42,8 @@ public sealed class RomManagerModule : IMoonbaseModule
     {
     }
 
+    public void OnStop() => _channel.Dispose();
+
     public void MapRoutes(IMoonbaseRouteTable routes)
     {
         routes.MapPost("systems", Systems);
@@ -56,25 +58,25 @@ public sealed class RomManagerModule : IMoonbaseModule
         routes.MapPost("restore", Restore);
     }
 
-    public Task<PluginRouteResult> Systems(PluginRouteRequest request) => Guard(() => SystemsCore(request));
+    public Task<PluginRouteResult> Systems(PluginRouteRequest request) => Guard(request, () => SystemsCore(request));
 
-    public Task<PluginRouteResult> Games(PluginRouteRequest request) => Guard(() => GamesCore(request));
+    public Task<PluginRouteResult> Games(PluginRouteRequest request) => Guard(request, () => GamesCore(request));
 
-    public Task<PluginRouteResult> Game(PluginRouteRequest request) => Guard(() => GameCore(request));
+    public Task<PluginRouteResult> Game(PluginRouteRequest request) => Guard(request, () => GameCore(request));
 
-    public Task<PluginRouteResult> Covers(PluginRouteRequest request) => Guard(() => CoversCore(request));
+    public Task<PluginRouteResult> Covers(PluginRouteRequest request) => Guard(request, () => CoversCore(request));
 
-    public Task<PluginRouteResult> Duplicates(PluginRouteRequest request) => Guard(() => DuplicatesCore(request));
+    public Task<PluginRouteResult> Duplicates(PluginRouteRequest request) => Guard(request, () => DuplicatesCore(request));
 
-    public Task<PluginRouteResult> Rescan(PluginRouteRequest request) => Guard(() => RescanCore(request));
+    public Task<PluginRouteResult> Rescan(PluginRouteRequest request) => Guard(request, () => RescanCore(request));
 
-    public Task<PluginRouteResult> TrashList(PluginRouteRequest request) => Guard(() => TrashListCore(request));
+    public Task<PluginRouteResult> TrashList(PluginRouteRequest request) => Guard(request, () => TrashListCore(request));
 
-    public Task<PluginRouteResult> Deps(PluginRouteRequest request) => Guard(() => DepsCore(request));
+    public Task<PluginRouteResult> Deps(PluginRouteRequest request) => Guard(request, () => DepsCore(request));
 
-    public Task<PluginRouteResult> Trash(PluginRouteRequest request) => Guard(() => TrashCore(request));
+    public Task<PluginRouteResult> Trash(PluginRouteRequest request) => Guard(request, () => TrashCore(request));
 
-    public Task<PluginRouteResult> Restore(PluginRouteRequest request) => Guard(() => RestoreCore(request));
+    public Task<PluginRouteResult> Restore(PluginRouteRequest request) => Guard(request, () => RestoreCore(request));
 
     private async Task<PluginRouteResult> SystemsCore(PluginRouteRequest request)
     {
@@ -103,8 +105,8 @@ public sealed class RomManagerModule : IMoonbaseModule
             indexing = snapshot.Indexing,
             message = snapshot.Indexing ? RomChannel.IndexingMessage : null,
             indexedAt = snapshot.Items.Count == 0 && snapshot.Indexing ? null : snapshot.FetchedAt.ToString("O"),
-            meta = ParseObject(snapshot.MetaJson),
-            status = ParseObject(status),
+            meta = AllowFields(snapshot.MetaJson),
+            status = AllowFields(status),
             systems = rows.Select(row => new
             {
                 system = row.System,
@@ -205,8 +207,7 @@ public sealed class RomManagerModule : IMoonbaseModule
             return Fail("too many covers");
         }
 
-        var covers = new Dictionary<string, string>(StringComparer.Ordinal);
-        var used = 0;
+        var jobs = new List<(string Path, string? Lb, int Width, bool Trash)>();
         foreach (var item in items.EnumerateArray())
         {
             if (item.ValueKind != JsonValueKind.Object)
@@ -226,8 +227,25 @@ public sealed class RomManagerModule : IMoonbaseModule
                 width = 200;
             }
 
-            var bytes = await _channel.GetThumbAsync(request.Services, path, Str(item, "lb"), width, trash, request.CancellationToken)
-                .ConfigureAwait(false);
+            jobs.Add((path, Str(item, "lb"), width, trash));
+        }
+
+        var fetched = new byte[]?[jobs.Count];
+        using var gate = new SemaphoreSlim(RomChannel.CoverParallelism);
+        var tasks = new Task[jobs.Count];
+        for (var i = 0; i < jobs.Count; i++)
+        {
+            var index = i;
+            tasks[i] = FetchCover(index);
+        }
+
+        await Task.WhenAll(tasks).ConfigureAwait(false);
+
+        var covers = new Dictionary<string, string>(StringComparer.Ordinal);
+        var used = 0;
+        for (var i = 0; i < jobs.Count; i++)
+        {
+            var bytes = fetched[i];
             if (bytes == null || bytes.Length == 0 || bytes.Length > RomChannel.MaxImageBytes || !RomChannel.IsJpeg(bytes))
             {
                 continue;
@@ -239,11 +257,30 @@ public sealed class RomManagerModule : IMoonbaseModule
                 continue;
             }
 
-            covers[path] = "data:image/jpeg;base64," + Convert.ToBase64String(bytes);
+            covers[jobs[i].Path] = "data:image/jpeg;base64," + Convert.ToBase64String(bytes);
             used += uriLength;
         }
 
         return PluginRouteResult.Json(new { ok = true, covers });
+
+        async Task FetchCover(int index)
+        {
+            await gate.WaitAsync(request.CancellationToken).ConfigureAwait(false);
+            try
+            {
+                var job = jobs[index];
+                fetched[index] = await _channel.GetThumbAsync(request.Services, job.Path, job.Lb, job.Width, job.Trash, request.CancellationToken)
+                    .ConfigureAwait(false);
+            }
+            catch (Exception) when (!request.CancellationToken.IsCancellationRequested)
+            {
+                fetched[index] = null;
+            }
+            finally
+            {
+                gate.Release();
+            }
+        }
     }
 
     private async Task<PluginRouteResult> DuplicatesCore(PluginRouteRequest request)
@@ -292,7 +329,7 @@ public sealed class RomManagerModule : IMoonbaseModule
             return Fail("Channel Manager returned " + result.Status + ".");
         }
 
-        _channel.Invalidate();
+        await _channel.Invalidate().ConfigureAwait(false);
         return PluginRouteResult.Json(new { ok = true });
     }
 
@@ -409,7 +446,7 @@ public sealed class RomManagerModule : IMoonbaseModule
             return UpstreamFailure(result);
         }
 
-        _channel.Invalidate();
+        await _channel.Invalidate().ConfigureAwait(false);
         return PluginRouteResult.Json(new { ok = true, moved = paths.Count });
     }
 
@@ -433,7 +470,7 @@ public sealed class RomManagerModule : IMoonbaseModule
             return UpstreamFailure(result);
         }
 
-        _channel.Invalidate();
+        await _channel.Invalidate().ConfigureAwait(false);
         return PluginRouteResult.Json(new { ok = true, restored = paths.Count });
     }
 
@@ -506,6 +543,7 @@ public sealed class RomManagerModule : IMoonbaseModule
             return false;
         }
 
+        var seen = new HashSet<string>(StringComparer.Ordinal);
         foreach (var item in value.EnumerateArray())
         {
             if (item.ValueKind != JsonValueKind.String || item.GetString() is not { Length: > 0 } path)
@@ -518,6 +556,11 @@ public sealed class RomManagerModule : IMoonbaseModule
             {
                 error = "invalid path";
                 return false;
+            }
+
+            if (!seen.Add(path))
+            {
+                continue;
             }
 
             paths.Add(path);
@@ -647,7 +690,14 @@ public sealed class RomManagerModule : IMoonbaseModule
         return detail;
     }
 
-    private static object? ParseObject(string? json)
+    private static readonly HashSet<string> PublicFields = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "counts", "count", "games", "roms", "items", "bytes", "files", "total", "size",
+        "state", "status",
+        "built", "builtAt", "built_at", "builtTime", "built_time", "indexedAt", "indexed_at", "generatedAt", "generated_at", "mtime",
+    };
+
+    private static Dictionary<string, object?>? AllowFields(string? json)
     {
         if (string.IsNullOrWhiteSpace(json))
         {
@@ -656,11 +706,66 @@ public sealed class RomManagerModule : IMoonbaseModule
 
         try
         {
-            return JsonSerializer.Deserialize<object>(json);
+            using var doc = JsonDocument.Parse(json);
+            if (doc.RootElement.ValueKind != JsonValueKind.Object)
+            {
+                return null;
+            }
+
+            var bag = new Dictionary<string, object?>(StringComparer.Ordinal);
+            foreach (var prop in doc.RootElement.EnumerateObject())
+            {
+                if (!PublicFields.Contains(prop.Name))
+                {
+                    continue;
+                }
+
+                var value = PublicValue(prop.Value);
+                if (value != null)
+                {
+                    bag[prop.Name] = value;
+                }
+            }
+
+            return bag.Count == 0 ? null : bag;
         }
         catch (JsonException)
         {
             return null;
+        }
+    }
+
+    private static object? PublicValue(JsonElement value)
+    {
+        switch (value.ValueKind)
+        {
+            case JsonValueKind.String:
+                return value.GetString();
+            case JsonValueKind.Number:
+                return value.TryGetInt64(out var number) ? number : value.GetDouble();
+            case JsonValueKind.True:
+                return true;
+            case JsonValueKind.False:
+                return false;
+            case JsonValueKind.Object:
+                var nested = new Dictionary<string, object?>(StringComparer.Ordinal);
+                foreach (var prop in value.EnumerateObject())
+                {
+                    if (prop.Value.ValueKind is JsonValueKind.Object or JsonValueKind.Array)
+                    {
+                        continue;
+                    }
+
+                    var inner = PublicValue(prop.Value);
+                    if (inner != null)
+                    {
+                        nested[prop.Name] = inner;
+                    }
+                }
+
+                return nested.Count == 0 ? null : nested;
+            default:
+                return null;
         }
     }
 
@@ -675,7 +780,7 @@ public sealed class RomManagerModule : IMoonbaseModule
             paths == null ? string.Empty : string.Join(", ", paths));
     }
 
-    private static async Task<PluginRouteResult> Guard(Func<Task<PluginRouteResult>> action)
+    private static async Task<PluginRouteResult> Guard(PluginRouteRequest request, Func<Task<PluginRouteResult>> action)
     {
         try
         {
@@ -692,6 +797,20 @@ public sealed class RomManagerModule : IMoonbaseModule
         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or IOException)
         {
             return Fail("Channel Manager is unreachable");
+        }
+        catch (Exception ex)
+        {
+            try
+            {
+                var factory = request.Services?.GetService(typeof(ILoggerFactory)) as ILoggerFactory;
+                factory?.CreateLogger("Moonfin.Plugin.RomManager").LogError(ex, "ROM Manager internal error");
+            }
+            catch (Exception)
+            {
+                // A logging failure must still answer the page.
+            }
+
+            return Fail("internal error");
         }
     }
 
