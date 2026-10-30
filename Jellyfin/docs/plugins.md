@@ -34,7 +34,7 @@ Same model as the Moonfin client host, plus the server half and the web entry.
 | `provides` | Capability flags this package claims. A flag is not turned on unless the loaded server module lists the same flag and the plugin is active. |
 | `requires` | Flags that must already be active (host or another plugin). Unmet requirements make the plugin **dormant**. That is not an error. |
 | `slots` | `homeRow`, `playback`, `settings`, `events`. |
-| `client.html`, `client.js` | Optional WebView files. Served from the folder that holds them (default `client/`) at `/Moonfin/Plugins/{id}/files/`. These files are public. |
+| `client.html`, `client.js` | Optional WebView files. Served from the folder that holds them (default `client/`) at `/Moonfin/Plugins/{id}/files/`. A root-level name (`index.html`) serves that file only, plus `client.js` when that is also a single file — never the rest of the plugin root. `./` and repeated slashes are folded so `clientEntryUrl` is a path that is actually served. These files are public. |
 | `server` | Optional type name of the `IMoonbaseModule` in the server dll. |
 | `minHostApi` | Must be `1` on this Moonbase. A higher value stays dormant and its DLL is not loaded. |
 | `proxyAccess` | `admin` (default) or `user`. Who may call `POST /Moonfin/Plugins/{id}/Proxy`. |
@@ -74,7 +74,7 @@ Routes map under `/Moonfin/Plugins/{id}/`. Do not use `files`, `Data`, or `Proxy
 | Method | Path | Who |
 | --- | --- | --- |
 | GET | `/Moonfin/Plugins` | Signed-in user. Plugins (`enabled`, `active`, `dormantReason`, `provides`, `slots`, `clientEntryUrl`, `version`) and the capability map. |
-| GET | `/Moonfin/Plugins/{id}/files/{path}` | Public, no login. An enabled, active plugin's client folder only. |
+| GET | `/Moonfin/Plugins/{id}/files/{path}` | Public, no login. An enabled, active plugin's client folder, or a root-level entry file. |
 | GET/PUT/DELETE | `/Moonfin/Plugins/{id}/Data/{key}` | Signed-in user. The plugin must be active. Per-user JSON, one token key. 200 keys and 5 MB per user; over that returns 413. |
 | POST | `/Moonfin/Plugins/{id}/Proxy` | The plugin must be active. Administrators only, unless `proxyAccess` is `user`. Allowlisted upstream. Moonbase adds the secret. |
 | GET/POST/PUT/DELETE | `/Moonfin/Plugins/{id}/{path}` | Routes the active module mapped. Dormant modules return 409. |
@@ -84,7 +84,7 @@ Routes map under `/Moonfin/Plugins/{id}/`. Do not use `files`, `Data`, or `Proxy
 | DELETE | `/Moonfin/Admin/Plugins/{id}` | Admin. |
 | GET/PUT | `/Moonfin/Admin/Plugins/{id}/Config` | Admin. Secret values are never returned. |
 
-Client files are public. MoFin's plugin WebView sends the Authorization header only on the first page load, so `GET /Moonfin/Plugins/{id}/files/{path}` does not require a login and every sub-file (html, js, css, images, fonts) has to load without one. Never put secrets, tokens, or private config in that folder. Anything private goes through the Data or Proxy routes, which still require a signed-in user. Disabled, dormant, and unknown plugins all answer 404, the same as a missing file. `plugin.json`, `config.json`, `data/`, dotfiles, the server half, and native libraries are not served. Only an enabled, active plugin's client folder is, and only web and asset extensions.
+Client files are public. MoFin's plugin WebView sends the Authorization header only on the first page load, so `GET /Moonfin/Plugins/{id}/files/{path}` does not require a login and every sub-file (html, js, css, images, fonts) has to load without one. Never put secrets, tokens, or private config in that folder. Anything private goes through the Data or Proxy routes, which still require a signed-in user. Disabled, dormant, and unknown plugins all answer 404, the same as a missing file. `plugin.json`, `config.json`, `data/`, dotfiles, the server half, and native libraries are not served. Only an enabled, active plugin's client folder is, and only web and asset extensions. A root-level entry is not a folder: only that file (and a root-level `client.js`) is served. `.svg` responses send the same page `Content-Security-Policy` as html.
 
 `GET /Moonfin/Ping` gains a `plugins` object. Existing ping fields are unchanged. Example: `{ "plugins": { "hello.homeRow": true } }`. `true` means an active server module listed that flag. Anything else is `false` or absent.
 

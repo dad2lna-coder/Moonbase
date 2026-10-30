@@ -173,6 +173,187 @@ public class PluginClientFileTests
     }
 
     [Fact]
+    public async Task RootEntriesSymlinksAndBlockedPathsStayClosed()
+    {
+        var root = Directory.CreateDirectory(Path.Combine(Path.GetTempPath(), "moonfin-files-" + Guid.NewGuid().ToString("N")));
+        string? fileLink = null;
+        string? dirLink = null;
+        WebApplication? app = null;
+        try
+        {
+            WritePlugin(root.FullName, "edge", ClientManifest("edge"), "EDGEPAGE");
+            var edgeClient = Path.Combine(root.FullName, "edge", "client");
+            File.WriteAllText(Path.Combine(edgeClient, "app.js.map"), "{\"version\":3}");
+            File.WriteAllText(Path.Combine(edgeClient, "font.ttf"), "ttf-font");
+            File.WriteAllText(Path.Combine(edgeClient, "icon.svg"), "<svg xmlns=\"http://www.w3.org/2000/svg\"></svg>");
+            var outside = Directory.CreateDirectory(Path.Combine(root.FullName, "edge", "outside"));
+            File.WriteAllText(Path.Combine(outside.FullName, "secret.txt"), Secret);
+            fileLink = Path.Combine(edgeClient, "linked.js");
+            dirLink = Path.Combine(edgeClient, "linked");
+            File.CreateSymbolicLink(fileLink, Path.Combine(root.FullName, "edge", "config.json"));
+            Directory.CreateSymbolicLink(dirLink, outside.FullName);
+
+            WriteRootPlugin(root.FullName, "rooty", "index.html", "app.js", "ROOTPAGE", "root-app");
+            WriteRootPlugin(root.FullName, "dotroot", "./index.html", "./app.js", "DOTROOT", "dot-app");
+            WritePlugin(root.FullName, "clean", ManifestWithClient("clean", "./client/./index.html", "client//app.js"), "CLEANPAGE");
+            WritePlugin(root.FullName, "climb", ManifestWithClient("climb", "../config.json"), "FALLBACK");
+            WritePlugin(root.FullName, "srv", ManifestWithClient("srv", "server/index.html"), "SRVCLIENT");
+            File.WriteAllText(Path.Combine(root.FullName, "srv", "server", "index.html"), "SERVERPAGE");
+            WritePlugin(root.FullName, "dat", ManifestWithClient("dat", "data/secret.json"), "DATCLIENT");
+            WritePlugin(root.FullName, "mix", ManifestWithClient("mix", "index.html", "client/app.js"), "client-index");
+            File.WriteAllText(Path.Combine(root.FullName, "mix", "index.html"), "MIXPAGE");
+            File.WriteAllText(Path.Combine(root.FullName, "mix", "client", "app.js"), "mix-app");
+            File.WriteAllText(Path.Combine(root.FullName, "mix", "client", "style.css"), "mix-css");
+            File.WriteAllText(Path.Combine(root.FullName, "mix", "extra.html"), "MIXEXTRA");
+
+            var catalog = new MoonbaseModuleCatalog();
+            var registry = new MoonfinPluginRegistry(catalog, root.FullName);
+            var listed = List(registry, catalog);
+
+            var edge = Assert.Single(listed.Plugins, item => item.Id == "edge");
+            Assert.Equal("/Moonfin/Plugins/edge/files/client/index.html", edge.ClientEntryUrl);
+            var rooty = Assert.Single(listed.Plugins, item => item.Id == "rooty");
+            Assert.Equal("/Moonfin/Plugins/rooty/files/index.html", rooty.ClientEntryUrl);
+            var dotroot = Assert.Single(listed.Plugins, item => item.Id == "dotroot");
+            Assert.Equal("/Moonfin/Plugins/dotroot/files/index.html", dotroot.ClientEntryUrl);
+            var clean = Assert.Single(listed.Plugins, item => item.Id == "clean");
+            Assert.Equal("/Moonfin/Plugins/clean/files/client/index.html", clean.ClientEntryUrl);
+            Assert.Null(Assert.Single(listed.Plugins, item => item.Id == "climb").ClientEntryUrl);
+            Assert.Null(Assert.Single(listed.Plugins, item => item.Id == "srv").ClientEntryUrl);
+            Assert.Null(Assert.Single(listed.Plugins, item => item.Id == "dat").ClientEntryUrl);
+            var mix = Assert.Single(listed.Plugins, item => item.Id == "mix");
+            Assert.Equal("/Moonfin/Plugins/mix/files/index.html", mix.ClientEntryUrl);
+
+            app = BuildFilesHost(registry, catalog);
+            await app.StartAsync();
+            using var client = new HttpClient { BaseAddress = new Uri(app.Urls.Single()) };
+
+            var rootHtml = await client.GetAsync(rooty.ClientEntryUrl);
+            Assert.Equal(HttpStatusCode.OK, rootHtml.StatusCode);
+            Assert.Equal(ClientPage(), Header(rootHtml, "Content-Security-Policy"));
+            Assert.Contains("ROOTPAGE", await rootHtml.Content.ReadAsStringAsync(), StringComparison.Ordinal);
+            var rootJs = await client.GetAsync("/Moonfin/Plugins/rooty/files/app.js");
+            Assert.Equal(HttpStatusCode.OK, rootJs.StatusCode);
+            Assert.Contains("root-app", await rootJs.Content.ReadAsStringAsync(), StringComparison.Ordinal);
+            await AssertMissing(client, "/Moonfin/Plugins/rooty/files/client/index.html", "NESTED");
+            await AssertMissing(client, "/Moonfin/Plugins/rooty/files/extra.html", "EXTRA");
+            await AssertMissing(client, "/Moonfin/Plugins/rooty/files/readme.txt", "README");
+            await AssertMissing(client, "/Moonfin/Plugins/rooty/files/config.json", Secret);
+            await AssertMissing(client, "/Moonfin/Plugins/rooty/files/plugin.json", Secret);
+
+            var dotHtml = await client.GetAsync(dotroot.ClientEntryUrl);
+            Assert.Equal(HttpStatusCode.OK, dotHtml.StatusCode);
+            Assert.Contains("DOTROOT", await dotHtml.Content.ReadAsStringAsync(), StringComparison.Ordinal);
+            var dotJs = await client.GetAsync("/Moonfin/Plugins/dotroot/files/app.js");
+            Assert.Equal(HttpStatusCode.OK, dotJs.StatusCode);
+            Assert.Contains("dot-app", await dotJs.Content.ReadAsStringAsync(), StringComparison.Ordinal);
+            await AssertMissing(client, "/Moonfin/Plugins/dotroot/files/extra.html", "EXTRA");
+
+            var cleanHtml = await client.GetAsync(clean.ClientEntryUrl);
+            Assert.Equal(HttpStatusCode.OK, cleanHtml.StatusCode);
+            Assert.Contains("CLEANPAGE", await cleanHtml.Content.ReadAsStringAsync(), StringComparison.Ordinal);
+            var cleanJs = await client.GetAsync("/Moonfin/Plugins/clean/files/client/app.js");
+            Assert.Equal(HttpStatusCode.OK, cleanJs.StatusCode);
+
+            var mixHtml = await client.GetAsync(mix.ClientEntryUrl);
+            Assert.Equal(HttpStatusCode.OK, mixHtml.StatusCode);
+            Assert.Contains("MIXPAGE", await mixHtml.Content.ReadAsStringAsync(), StringComparison.Ordinal);
+            var mixJs = await client.GetAsync("/Moonfin/Plugins/mix/files/client/app.js");
+            Assert.Equal(HttpStatusCode.OK, mixJs.StatusCode);
+            Assert.Contains("mix-app", await mixJs.Content.ReadAsStringAsync(), StringComparison.Ordinal);
+            var mixCss = await client.GetAsync("/Moonfin/Plugins/mix/files/client/style.css");
+            Assert.Equal(HttpStatusCode.OK, mixCss.StatusCode);
+            Assert.Contains("mix-css", await mixCss.Content.ReadAsStringAsync(), StringComparison.Ordinal);
+            await AssertMissing(client, "/Moonfin/Plugins/mix/files/extra.html", "MIXEXTRA");
+            await AssertMissing(client, "/Moonfin/Plugins/mix/files/app.js", "root-app");
+
+            var fallback = await client.GetAsync("/Moonfin/Plugins/climb/files/client/index.html");
+            Assert.Equal(HttpStatusCode.OK, fallback.StatusCode);
+            Assert.Contains("FALLBACK", await fallback.Content.ReadAsStringAsync(), StringComparison.Ordinal);
+            await AssertMissing(client, "/Moonfin/Plugins/climb/files/config.json", Secret);
+
+            await AssertMissing(client, "/Moonfin/Plugins/srv/files/server/index.html", "SERVERPAGE");
+            await AssertMissing(client, "/Moonfin/Plugins/srv/files/data/secret.json", Secret);
+            var srvClient = await client.GetAsync("/Moonfin/Plugins/srv/files/client/index.html");
+            Assert.Equal(HttpStatusCode.OK, srvClient.StatusCode);
+            Assert.Contains("SRVCLIENT", await srvClient.Content.ReadAsStringAsync(), StringComparison.Ordinal);
+
+            await AssertMissing(client, "/Moonfin/Plugins/dat/files/data/secret.json", Secret);
+            await AssertMissing(client, "/Moonfin/Plugins/dat/files/server/Hello.dll", "MZ-server");
+            var datClient = await client.GetAsync("/Moonfin/Plugins/dat/files/client/index.html");
+            Assert.Equal(HttpStatusCode.OK, datClient.StatusCode);
+            Assert.Contains("DATCLIENT", await datClient.Content.ReadAsStringAsync(), StringComparison.Ordinal);
+
+            var map = await client.GetAsync("/Moonfin/Plugins/edge/files/client/app.js.map");
+            Assert.Equal(HttpStatusCode.OK, map.StatusCode);
+            Assert.Equal("application/json", map.Content.Headers.ContentType?.ToString());
+            Assert.Equal(string.Empty, Header(map, "Content-Security-Policy"));
+            var ttf = await client.GetAsync("/Moonfin/Plugins/edge/files/client/font.ttf");
+            Assert.Equal(HttpStatusCode.OK, ttf.StatusCode);
+            Assert.Equal("font/ttf", ttf.Content.Headers.ContentType?.ToString());
+            Assert.Equal(string.Empty, Header(ttf, "Content-Security-Policy"));
+            var svg = await client.GetAsync("/Moonfin/Plugins/edge/files/client/icon.svg");
+            Assert.Equal(HttpStatusCode.OK, svg.StatusCode);
+            Assert.Equal("image/svg+xml", svg.Content.Headers.ContentType?.ToString());
+            Assert.Equal(ClientPage(), Header(svg, "Content-Security-Policy"));
+            Assert.Equal("nosniff", Header(svg, "X-Content-Type-Options"));
+            Assert.Equal("no-cache", Header(svg, "Cache-Control"));
+
+            await AssertMissing(client, "/Moonfin/Plugins/edge/files/client/linked.js", Secret);
+            await AssertMissing(client, "/Moonfin/Plugins/edge/files/client/linked/secret.txt", Secret);
+            await AssertMissing(client, "/Moonfin/Plugins/edge/files/Client/index.html", "EDGEPAGE");
+
+            var baseUri = new Uri(app.Urls.Single());
+            foreach (var path in new[]
+            {
+                "/Moonfin/Plugins/edge/files/%252e%252e/config.json",
+                "/Moonfin/Plugins/edge/files/client/%252e%252e/config.json",
+                "/Moonfin/Plugins/edge/files/client/index.html.",
+                "/Moonfin/Plugins/edge/files/client/index.html%20",
+                "/Moonfin/Plugins/climb/files/../config.json",
+            })
+            {
+                var raw = await Raw(baseUri, "GET " + path + " HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n");
+                Assert.StartsWith("HTTP/1.1 404", raw, StringComparison.Ordinal);
+                Assert.DoesNotContain(Secret, raw, StringComparison.Ordinal);
+                Assert.DoesNotContain("EDGEPAGE", raw, StringComparison.Ordinal);
+                Assert.DoesNotContain("FALLBACK", raw, StringComparison.Ordinal);
+            }
+
+            using var starred = new HttpRequestMessage(HttpMethod.Get, "/Moonfin/Plugins/edge/files/config.json");
+            starred.Headers.TryAddWithoutValidation("If-None-Match", "*");
+            var blockedStar = await client.SendAsync(starred);
+            Assert.Equal(HttpStatusCode.NotFound, blockedStar.StatusCode);
+            Assert.DoesNotContain(Secret, await blockedStar.Content.ReadAsStringAsync(), StringComparison.Ordinal);
+
+            using var liveStar = new HttpRequestMessage(HttpMethod.Get, edge.ClientEntryUrl);
+            liveStar.Headers.TryAddWithoutValidation("If-None-Match", "*");
+            var live = await client.SendAsync(liveStar);
+            Assert.Equal(HttpStatusCode.NotModified, live.StatusCode);
+        }
+        finally
+        {
+            if (app != null)
+            {
+                await app.StopAsync();
+                await app.DisposeAsync();
+            }
+
+            if (fileLink != null && File.Exists(fileLink))
+            {
+                File.Delete(fileLink);
+            }
+
+            if (dirLink != null && Directory.Exists(dirLink))
+            {
+                Directory.Delete(dirLink, recursive: false);
+            }
+
+            Directory.Delete(root.FullName, recursive: true);
+        }
+    }
+
+    [Fact]
     public void OnlyTheClientFileRouteIsAnonymous()
     {
         var methods = typeof(MoonfinPluginsController)
@@ -269,6 +450,64 @@ public class PluginClientFileTests
         File.WriteAllText(Path.Combine(client.FullName, "native.so"), "ELF");
         File.WriteAllText(Path.Combine(root, id, "server", "Hello.dll"), "MZ-server");
         File.WriteAllText(Path.Combine(root, id, "data", "secret.json"), "{\"token\":\"" + Secret + "\"}");
+    }
+
+    private static string ManifestWithClient(string id, string html, string? js = null)
+    {
+        var client = js == null
+            ? "\"html\":\"" + html + "\""
+            : "\"html\":\"" + html + "\",\"js\":\"" + js + "\"";
+        return "{\"id\":\"" + id + "\",\"name\":\"" + id + "\",\"version\":\"1.0.0\",\"description\":\"Hi\",\"provides\":[],\"slots\":[\"homeRow\"],\"client\":{" + client + "},\"minHostApi\":1}";
+    }
+
+    private static void WriteRootPlugin(string root, string id, string html, string js, string page, string script)
+    {
+        WritePlugin(root, id, ManifestWithClient(id, html, js), "NESTED");
+        File.WriteAllText(Path.Combine(root, id, "index.html"), page);
+        File.WriteAllText(Path.Combine(root, id, "app.js"), script);
+        File.WriteAllText(Path.Combine(root, id, "extra.html"), "EXTRA");
+        File.WriteAllText(Path.Combine(root, id, "readme.txt"), "README");
+    }
+
+    private static WebApplication BuildFilesHost(MoonfinPluginRegistry registry, MoonbaseModuleCatalog catalog)
+    {
+        var builder = WebApplication.CreateBuilder();
+        builder.Logging.ClearProviders();
+        builder.WebHost.UseUrls("http://127.0.0.1:0");
+        builder.Services.AddAuthentication(options =>
+        {
+            options.DefaultAuthenticateScheme = NoUserHandler.Name;
+            options.DefaultChallengeScheme = NoUserHandler.Name;
+        }).AddScheme<AuthenticationSchemeOptions, NoUserHandler>(NoUserHandler.Name, _ => { });
+        builder.Services.AddAuthorization(options =>
+        {
+            options.AddPolicy("RequiresElevation", policy => policy.RequireRole("Administrator"));
+        });
+        builder.Services.AddSingleton<IStartupFilter, PluginClientFileGuard>();
+        builder.Services.AddSingleton(registry);
+        builder.Services.AddSingleton(catalog);
+        builder.Services.AddControllers().ConfigureApplicationPartManager(manager =>
+        {
+            manager.ApplicationParts.Clear();
+            manager.ApplicationParts.Add(new Microsoft.AspNetCore.Mvc.ApplicationParts.AssemblyPart(typeof(MoonfinPluginsController).Assembly));
+            manager.FeatureProviders.Clear();
+            manager.FeatureProviders.Add(new OnlyPluginController());
+        });
+
+        var app = builder.Build();
+        app.UseAuthentication();
+        app.UseAuthorization();
+        app.MapControllers();
+        return app;
+    }
+
+    private static async Task AssertMissing(HttpClient client, string path, string absent)
+    {
+        var response = await client.GetAsync(path);
+        var body = await response.Content.ReadAsStringAsync();
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+        Assert.DoesNotContain(Secret, body, StringComparison.Ordinal);
+        Assert.DoesNotContain(absent, body, StringComparison.Ordinal);
     }
 
     private sealed class OnlyPluginController : ControllerFeatureProvider

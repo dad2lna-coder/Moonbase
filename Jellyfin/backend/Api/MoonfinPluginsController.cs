@@ -70,7 +70,8 @@ public class MoonfinPluginsController : ControllerBase
     }
 
     // The plugin WebView sends Authorization only on the first page load, so client files are
-    // anonymous. Anything outside that plugin's client folder stays unreadable.
+    // anonymous. Anything outside that plugin's client folder stays unreadable. A root-level
+    // client.html or client.js is the one exception: that file only, never the plugin root.
     [HttpGet("Plugins/{id}/files/{**path}")]
     [AllowAnonymous]
     public IActionResult PluginFile(string id, string path)
@@ -99,7 +100,8 @@ public class MoonfinPluginsController : ControllerBase
         Response.Headers["ETag"] = etag;
         Response.Headers["X-Content-Type-Options"] = "nosniff";
         if (extension.Equals(".html", StringComparison.OrdinalIgnoreCase)
-            || extension.Equals(".htm", StringComparison.OrdinalIgnoreCase))
+            || extension.Equals(".htm", StringComparison.OrdinalIgnoreCase)
+            || extension.Equals(".svg", StringComparison.OrdinalIgnoreCase))
         {
             Response.Headers["Content-Security-Policy"] = ClientPagePolicy;
         }
@@ -560,7 +562,10 @@ public class MoonfinPluginsController : ControllerBase
                 continue;
             }
 
-            if (segment[0] == '.' || segment.Contains(':', StringComparison.Ordinal))
+            if (segment[0] == '.'
+                || segment[^1] == '.'
+                || segment[^1] == ' '
+                || segment.Contains(':', StringComparison.Ordinal))
             {
                 return false;
             }
@@ -589,7 +594,11 @@ public class MoonfinPluginsController : ControllerBase
 
         foreach (var segment in segments)
         {
-            if (segment.Length == 0 || segment[0] == '.' || segment.Contains(':', StringComparison.Ordinal))
+            if (segment.Length == 0
+                || segment[0] == '.'
+                || segment[^1] == '.'
+                || segment[^1] == ' '
+                || segment.Contains(':', StringComparison.Ordinal))
             {
                 return false;
             }
@@ -612,6 +621,11 @@ public class MoonfinPluginsController : ControllerBase
         }
 
         var path = relative!.Replace('\\', '/').Trim('/');
+        if (IsNamedRootClientFile(manifest, path))
+        {
+            return true;
+        }
+
         foreach (var folder in ClientFolders(manifest))
         {
             if (path.StartsWith(folder + "/", StringComparison.Ordinal))
@@ -626,6 +640,11 @@ public class MoonfinPluginsController : ControllerBase
     private static bool IsResolvedInsideClient(PluginManifest manifest, string pluginDir, string full)
     {
         var destination = Path.GetFullPath(full);
+        if (IsResolvedRootEntry(manifest, pluginDir, destination))
+        {
+            return true;
+        }
+
         foreach (var folder in ClientFolders(manifest))
         {
             var root = Path.GetFullPath(Path.Combine(pluginDir, folder.Replace('/', Path.DirectorySeparatorChar)));
@@ -643,12 +662,42 @@ public class MoonfinPluginsController : ControllerBase
         var folders = new List<string>();
         AddClientFolder(folders, manifest.Client?.Html);
         AddClientFolder(folders, manifest.Client?.Js);
-        if (folders.Count == 0)
+        if (folders.Count == 0 && !HasRootClientFile(manifest))
         {
             folders.Add("client");
         }
 
         return folders;
+    }
+
+    private static bool HasRootClientFile(PluginManifest manifest) =>
+        IsRootClientFile(manifest.Client?.Html) || IsRootClientFile(manifest.Client?.Js);
+
+    private static bool IsRootClientFile(string? entry) =>
+        !string.IsNullOrEmpty(entry) && entry.IndexOf('/') < 0;
+
+    private static bool IsNamedRootClientFile(PluginManifest manifest, string path) =>
+        IsRootClientFile(path)
+        && (string.Equals(path, manifest.Client?.Html, StringComparison.Ordinal)
+            || string.Equals(path, manifest.Client?.Js, StringComparison.Ordinal));
+
+    private static bool IsResolvedRootEntry(PluginManifest manifest, string pluginDir, string destination)
+    {
+        foreach (var entry in new[] { manifest.Client?.Html, manifest.Client?.Js })
+        {
+            if (entry == null || !IsRootClientFile(entry))
+            {
+                continue;
+            }
+
+            var expected = Path.GetFullPath(Path.Combine(pluginDir, entry));
+            if (string.Equals(destination, expected, StringComparison.Ordinal))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private static void AddClientFolder(List<string> folders, string? entry)
@@ -660,31 +709,18 @@ public class MoonfinPluginsController : ControllerBase
 
         var relative = entry.Replace('\\', '/').Trim().TrimStart('/');
         var slash = relative.LastIndexOf('/');
-        var folder = slash < 0 ? "client" : relative[..slash];
-        if (!IsAllowedClientFolder(folder) || folders.Contains(folder, StringComparer.Ordinal))
+        if (slash < 0)
+        {
+            return;
+        }
+
+        var folder = relative[..slash];
+        if (!PluginManifest.IsAllowedClientFolder(folder) || folders.Contains(folder, StringComparer.Ordinal))
         {
             return;
         }
 
         folders.Add(folder);
-    }
-
-    private static bool IsAllowedClientFolder(string folder)
-    {
-        if (folder.Length == 0
-            || folder.Contains("..", StringComparison.Ordinal)
-            || folder.Contains(':', StringComparison.Ordinal)
-            || folder.Contains('\\', StringComparison.Ordinal))
-        {
-            return false;
-        }
-
-        var first = folder.Split('/')[0];
-        return first.Length > 0
-            && first[0] != '.'
-            && first[0] != '_'
-            && !first.Equals("server", StringComparison.OrdinalIgnoreCase)
-            && !first.Equals("data", StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool IsRealFileInside(string root, string destination)
@@ -787,12 +823,7 @@ public class MoonfinPluginsController : ControllerBase
         }
 
         var name = Path.GetFileName(path);
-        if (name.Equals("config.json", StringComparison.OrdinalIgnoreCase)
-            || name.Equals("state.json", StringComparison.OrdinalIgnoreCase)
-            || name.Equals("plugin.json", StringComparison.OrdinalIgnoreCase)
-            || name.EndsWith(".dll", StringComparison.OrdinalIgnoreCase)
-            || name.EndsWith(".pdb", StringComparison.OrdinalIgnoreCase)
-            || name.EndsWith(".so", StringComparison.OrdinalIgnoreCase))
+        if (PluginManifest.IsBlockedClientFileName(name))
         {
             return false;
         }
@@ -940,7 +971,28 @@ public sealed class PluginClientFileGuard : IStartupFilter
             || path.Contains("%2e", StringComparison.OrdinalIgnoreCase)
             || path.Contains("%2f", StringComparison.OrdinalIgnoreCase)
             || path.Contains("%5c", StringComparison.OrdinalIgnoreCase)
-            || path.Contains("%252e", StringComparison.OrdinalIgnoreCase);
+            || path.Contains("%252e", StringComparison.OrdinalIgnoreCase)
+            || RawSegmentEndsWithDotOrSpace(path);
+    }
+
+    private static bool RawSegmentEndsWithDotOrSpace(string path)
+    {
+        foreach (var segment in path.Split('/'))
+        {
+            if (segment.Length == 0)
+            {
+                continue;
+            }
+
+            if (segment[^1] == '.'
+                || segment[^1] == ' '
+                || segment.EndsWith("%20", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 }
 

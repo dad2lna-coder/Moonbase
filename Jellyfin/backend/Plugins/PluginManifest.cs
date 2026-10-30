@@ -20,6 +20,28 @@ public sealed class PluginManifest
         "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$",
         RegexOptions.CultureInvariant | RegexOptions.Compiled);
 
+    private static readonly HashSet<string> ServedExtensions = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ".html",
+        ".htm",
+        ".js",
+        ".mjs",
+        ".css",
+        ".json",
+        ".map",
+        ".svg",
+        ".png",
+        ".jpg",
+        ".jpeg",
+        ".gif",
+        ".webp",
+        ".ico",
+        ".txt",
+        ".woff",
+        ".woff2",
+        ".ttf",
+    };
+
     public static readonly IReadOnlySet<string> KnownSlots = new HashSet<string>(StringComparer.Ordinal)
     {
         "homeRow",
@@ -160,12 +182,43 @@ public sealed class PluginManifest
         return "/Moonfin/Plugins/" + Id + "/files/" + relative;
     }
 
+    internal static bool IsAllowedClientFolder(string folder)
+    {
+        if (folder.Length == 0
+            || folder.Contains("..", StringComparison.Ordinal)
+            || folder.Contains(':', StringComparison.Ordinal)
+            || folder.Contains('\\', StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        var first = folder.Split('/')[0];
+        return first.Length > 0
+            && first[0] != '.'
+            && first[0] != '_'
+            && !first.Equals("server", StringComparison.OrdinalIgnoreCase)
+            && !first.Equals("data", StringComparison.OrdinalIgnoreCase);
+    }
+
+    internal static bool IsBlockedClientFileName(string name) =>
+        name.Equals("config.json", StringComparison.OrdinalIgnoreCase)
+        || name.Equals("state.json", StringComparison.OrdinalIgnoreCase)
+        || name.Equals("plugin.json", StringComparison.OrdinalIgnoreCase)
+        || name.EndsWith(".dll", StringComparison.OrdinalIgnoreCase)
+        || name.EndsWith(".pdb", StringComparison.OrdinalIgnoreCase)
+        || name.EndsWith(".so", StringComparison.OrdinalIgnoreCase);
+
     private static List<string> CleanTokens(List<string>? tokens) =>
         (tokens ?? new List<string>())
             .Where(IsValidToken)
             .Distinct(StringComparer.Ordinal)
             .ToList();
 
+    /// <summary>
+    /// Keeps a client path only when the file route can serve it. <c>./</c> and empty
+    /// segments are folded so the published entry URL is the path that will be requested.
+    /// A root-level name stays a single file; it does not become the plugin root.
+    /// </summary>
     private static string? CleanRelative(string? path)
     {
         if (string.IsNullOrWhiteSpace(path))
@@ -173,14 +226,47 @@ public sealed class PluginManifest
             return null;
         }
 
-        var relative = path.Replace('\\', '/').Trim().TrimStart('/');
-        if (relative.Length == 0 || relative.Contains("..", StringComparison.Ordinal) || relative.Contains(':', StringComparison.Ordinal))
+        var relative = path.Replace('\\', '/').Trim();
+        if (relative.Length == 0
+            || relative.Contains('\0', StringComparison.Ordinal)
+            || relative.Contains("..", StringComparison.Ordinal)
+            || relative.Contains(':', StringComparison.Ordinal)
+            || relative.Contains('%', StringComparison.Ordinal))
         {
             return null;
         }
 
-        return relative;
+        var segments = new List<string>();
+        foreach (var segment in relative.Split('/'))
+        {
+            if (segment.Length == 0 || segment == ".")
+            {
+                continue;
+            }
+
+            if (segment[0] == '.' || segment[^1] == '.' || segment[^1] == ' ')
+            {
+                return null;
+            }
+
+            segments.Add(segment);
+        }
+
+        if (segments.Count == 0 || !IsServedClientFile(segments[^1]))
+        {
+            return null;
+        }
+
+        if (segments.Count > 1 && !IsAllowedClientFolder(string.Join('/', segments.GetRange(0, segments.Count - 1))))
+        {
+            return null;
+        }
+
+        return string.Join('/', segments);
     }
+
+    private static bool IsServedClientFile(string name) =>
+        !IsBlockedClientFileName(name) && ServedExtensions.Contains(Path.GetExtension(name));
 
     private static string TrimField(string? value, int max)
     {
