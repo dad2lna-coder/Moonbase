@@ -44,6 +44,8 @@ test("the page has one play path and does not call forbidden routes", () => {
   assert.match(app, /api\("launch"/);
   assert.match(app, /hostCall\("playGame"/);
   assert.match(app, /if \(result\.biosUrl\) play\.biosUrl = result\.biosUrl/);
+  assert.match(app, /if \(result\.core\) play\.core = result\.core/);
+  assert.match(app, /dreamcast:/);
   assert.equal(app.includes("Playing from ROM Manager is coming soon"), false);
   assert.equal(app.includes("fetch("), false);
   assert.equal(app.includes("XMLHttpRequest"), false);

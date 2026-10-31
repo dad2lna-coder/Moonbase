@@ -662,6 +662,149 @@ public class GamesServiceTests : IDisposable
         ]);
     }
 
+    [Theory]
+    [InlineData("Dreamcast", "dreamcast")]
+    [InlineData("dc", "dreamcast")]
+    [InlineData("Sega Dreamcast", "dreamcast")]
+    [InlineData("DC", "dreamcast")]
+    public void ResolveSystemCore_MapsDreamcastFolders(string systemName, string expected)
+    {
+        var core = GamesService.ResolveSystemCore(systemName, Array.Empty<string>(), out var wasDefaulted);
+
+        Assert.Equal(expected, core);
+        Assert.False(wasDefaulted);
+        Assert.False(GamesService.SupportsEmulatorJs(core));
+    }
+
+    [Fact]
+    public void DiscIndexes_NameTheTracksACueOrGdiPointsAt()
+    {
+        Assert.Equal(
+            new[] { "track01.bin", "track 02.raw" },
+            GameSystemCoreResolver.CueTrackNames("FILE \"track01.bin\" BINARY\nFILE \"track 02.raw\" MOTOROLA\n"));
+        Assert.Equal(
+            new[] { "track01.bin", "extra.chd" },
+            GameSystemCoreResolver.GdiTrackNames("2\n1 0 4 2352 track01.bin 0\n2 450 0 2352 \"extra.chd\" 0\n"));
+    }
+
+    [Fact]
+    public async Task Dreamcast_ListsTheDiscNotItsTracks_AndReturnsOptionalBios()
+    {
+        var libraryRoot = Path.Combine(_root, "Roms");
+        var dreamcast = Path.Combine(libraryRoot, "Dreamcast");
+        var sonic = Path.Combine(dreamcast, "Sonic");
+        Directory.CreateDirectory(sonic);
+        var gdi = Path.Combine(sonic, "Sonic Adventure.gdi");
+        File.WriteAllText(gdi, "2\n1 0 4 2352 track01.bin 0\n2 450 0 2352 \"extra.chd\" 0\n");
+        File.WriteAllBytes(Path.Combine(sonic, "track01.bin"), [1]);
+        File.WriteAllBytes(Path.Combine(sonic, "track02.raw"), [2]);
+        File.WriteAllBytes(Path.Combine(sonic, "extra.chd"), [3]);
+        File.WriteAllBytes(Path.Combine(sonic, "notes.txt"), [4]);
+
+        var shenmueCue = Path.Combine(dreamcast, "Shenmue.cue");
+        File.WriteAllText(shenmueCue, "FILE \"Shenmue.bin\" BINARY\n  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\n");
+        File.WriteAllBytes(Path.Combine(dreamcast, "Shenmue.bin"), [5]);
+        var taxi = Path.Combine(dreamcast, "Crazy Taxi.chd");
+        File.WriteAllBytes(taxi, [6]);
+        File.WriteAllBytes(Path.Combine(dreamcast, "Jet Grind Radio.cdi"), [7]);
+
+        var discZip = ZipFixtures.WriteZip(
+            dreamcast,
+            "Skies of Arcadia.zip",
+            ("Skies of Arcadia.gdi", "1\n1 0 4 2352 track01.bin 0\n"u8.ToArray()),
+            ("track01.bin", [8, 9]));
+        var singleZip = ZipFixtures.WriteZip(dreamcast, "Power Stone.cdi.zip", ("Power Stone.cdi", [1, 2, 3, 4]));
+
+        var dc = Path.Combine(libraryRoot, "dc", "Power Stone");
+        Directory.CreateDirectory(dc);
+        var dcGdi = Path.Combine(dc, "Power Stone.gdi");
+        File.WriteAllBytes(dcGdi, [9]);
+
+        var biosDir = Path.Combine(libraryRoot, ".bios", "Dreamcast");
+        Directory.CreateDirectory(biosDir);
+        var boot = Path.Combine(biosDir, "DC_BOOT.BIN");
+        var flash = Path.Combine(biosDir, "dc_flash.bin");
+        File.WriteAllBytes(boot, [1, 2]);
+        File.WriteAllBytes(flash, [3, 4]);
+        File.WriteAllBytes(Path.Combine(biosDir, "readme.txt"), [5]);
+
+        var psx = Path.Combine(libraryRoot, "PSX");
+        Directory.CreateDirectory(psx);
+        File.WriteAllText(Path.Combine(psx, "Ridge Racer.cue"), "FILE \"Ridge Racer.bin\" BINARY\n");
+        File.WriteAllBytes(Path.Combine(psx, "Ridge Racer.bin"), [6]);
+
+        var service = new GamesService(new FakeLibraryManager(
+        [
+            new VirtualFolderInfo { Name = "Roms", ItemId = "lib-dc", Locations = [libraryRoot] },
+        ]));
+
+        var systems = service.GetSystems("lib-dc");
+        var dreamcastSystem = Assert.Single(systems, system => system.Name == "Dreamcast");
+        Assert.Equal("dreamcast", dreamcastSystem.Core);
+        Assert.False(dreamcastSystem.EmulatorJsSupported);
+        Assert.Equal("dreamcast", Assert.Single(systems, system => system.Name == "dc").Core);
+        Assert.Equal("psx", Assert.Single(systems, system => system.Name == "PSX").Core);
+
+        var names = service.GetGames("lib-dc", "Dreamcast").Select(game => game.FileName).OrderBy(name => name).ToList();
+        Assert.Equal(
+            new[] { "Crazy Taxi.chd", "Jet Grind Radio.cdi", "Power Stone.cdi.zip", "Shenmue.cue", "Skies of Arcadia.zip", "Sonic Adventure.gdi" },
+            names);
+        Assert.All(service.GetGames("lib-dc", "Dreamcast"), game =>
+        {
+            Assert.Equal("dreamcast", game.Core);
+            Assert.False(game.EmulatorJsSupported);
+        });
+
+        var psxNames = service.GetGames("lib-dc", "PSX").Select(game => game.FileName).ToList();
+        Assert.Equal(new[] { "Ridge Racer.cue" }, psxNames);
+
+        Assert.True(GamesService.ShouldPreserveArchiveForCore("dreamcast", discZip));
+        Assert.False(GamesService.ShouldPreserveArchiveForCore("dreamcast", singleZip));
+        Assert.False(GamesService.IsPlayableFileForCore("dreamcast", "track01.bin"));
+        Assert.False(GamesService.IsPlayableFileForCore("dreamcast", "game.nes"));
+        Assert.True(GamesService.IsPlayableFileForCore("dreamcast", "game.gdi"));
+
+        var detail = await service.GetGameAsync("lib-dc", GamePathResolver.EncodeToken(Path.GetFullPath(gdi)), null, CancellationToken.None);
+        Assert.NotNull(detail);
+        Assert.Equal("dreamcast", detail!.Core);
+        Assert.False(detail.EmulatorJsSupported);
+        Assert.Equal(new[] { "dc_boot.bin", "dc_flash.bin" }, detail.Bios.Select(item => item.FileName).ToArray());
+        Assert.Equal(Path.GetFullPath(boot), DecodeGameToken(detail.Bios[0].Id));
+        Assert.Equal(Path.GetFullPath(flash), DecodeGameToken(detail.Bios[1].Id));
+
+        var zipped = await service.GetGameAsync("lib-dc", GamePathResolver.EncodeToken(Path.GetFullPath(discZip)), null, CancellationToken.None);
+        Assert.Equal("Skies of Arcadia.zip", zipped!.FileName);
+        Assert.Equal(new FileInfo(discZip).Length, zipped.SizeBytes);
+
+        var fromDc = await service.GetGameAsync("lib-dc", GamePathResolver.EncodeToken(Path.GetFullPath(dcGdi)), null, CancellationToken.None);
+        Assert.Equal(new[] { "dc_boot.bin", "dc_flash.bin" }, fromDc!.Bios.Select(item => item.FileName).ToArray());
+
+        var bareRoot = Path.Combine(_root, "Bare");
+        var bareGame = Path.Combine(bareRoot, "Dreamcast", "House of the Dead.cdi");
+        Directory.CreateDirectory(Path.GetDirectoryName(bareGame)!);
+        File.WriteAllBytes(bareGame, [1]);
+        var bare = new GamesService(new FakeLibraryManager(
+        [
+            new VirtualFolderInfo { Name = "Bare Roms", ItemId = "lib-bare", Locations = [bareRoot] },
+        ]));
+        var withoutBios = await bare.GetGameAsync("lib-bare", GamePathResolver.EncodeToken(Path.GetFullPath(bareGame)), null, CancellationToken.None);
+        Assert.NotNull(withoutBios);
+        Assert.Empty(withoutBios!.Bios);
+        Assert.False(withoutBios.EmulatorJsSupported);
+    }
+
+    private static string DecodeGameToken(string token)
+    {
+        var padded = token.Replace('-', '+').Replace('_', '/');
+        switch (padded.Length % 4)
+        {
+            case 2: padded += "=="; break;
+            case 3: padded += "="; break;
+        }
+
+        return System.Text.Encoding.UTF8.GetString(Convert.FromBase64String(padded));
+    }
+
     public void Dispose()
     {
         if (Directory.Exists(_root))

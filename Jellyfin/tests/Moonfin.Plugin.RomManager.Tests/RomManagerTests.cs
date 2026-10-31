@@ -248,6 +248,59 @@ public class RomManagerRouteTests
     }
 
     [Fact]
+    public async Task LaunchDreamcast_ListsTheSystemAndPassesCoreWithoutEmulatorJs()
+    {
+        var temp = Directory.CreateDirectory(Path.Combine(Path.GetTempPath(), "moonfin-launch-dc-" + Guid.NewGuid().ToString("N")));
+        try
+        {
+            var romRoot = Path.Combine(temp.FullName, "roms");
+            var rom = Path.Combine(romRoot, "Dreamcast", "Sonic", "Sonic Adventure.gdi");
+            Directory.CreateDirectory(Path.GetDirectoryName(rom)!);
+            File.WriteAllText(rom, "1\n1 0 4 2352 track01.bin 0\n");
+            File.WriteAllBytes(Path.Combine(Path.GetDirectoryName(rom)!, "track01.bin"), [1, 2, 3]);
+            var bios = Path.Combine(romRoot, ".bios", "Dreamcast");
+            Directory.CreateDirectory(bios);
+            File.WriteAllBytes(Path.Combine(bios, "dc_boot.bin"), [4]);
+            File.WriteAllBytes(Path.Combine(bios, "dc_flash.bin"), [5]);
+
+            var library = DispatchProxy.Create<ILibraryManager, FolderLibrary>();
+            ((FolderLibrary)(object)library).Folders.Add(new VirtualFolderInfo
+            {
+                Name = "Retro Games",
+                ItemId = "retro-games",
+                Locations = new[] { romRoot },
+            });
+            var games = new GamesService(library);
+            var plugins = Directory.CreateDirectory(Path.Combine(temp.FullName, "plugins"));
+            Directory.CreateDirectory(Path.Combine(plugins.FullName, "rom-manager"));
+            var registry = new MoonfinPluginRegistry(new MoonbaseModuleCatalog(), plugins.FullName);
+            registry.WriteConfig("rom-manager", JsonSerializer.Serialize(new Dictionary<string, string> { ["romRoot"] = romRoot }));
+            var services = new ServiceCollection();
+            services.AddSingleton(registry);
+            services.AddSingleton(games);
+            var provider = services.BuildServiceProvider();
+            const string index = """{"items":[{"p":"Dreamcast/Sonic","s":"Dreamcast","t":"Sonic Adventure","f":"Sonic Adventure.gdi","z":10,"m":1,"mg":0}]}""";
+            var module = Module(_ => Text(HttpStatusCode.OK, index));
+
+            var systems = await Json(module.Systems(Req("{}", services: provider)));
+            Assert.Equal("Dreamcast", Assert.Single(systems.GetProperty("systems").EnumerateArray()).GetProperty("system").GetString());
+
+            var body = await Json(module.Launch(Req("""{"key":"p:Dreamcast/Sonic","p":"Dreamcast/Sonic"}""", services: provider)));
+            Assert.True(body.GetProperty("ok").GetBoolean());
+            Assert.False(body.GetProperty("playable").GetBoolean());
+            Assert.Equal("dreamcast", body.GetProperty("core").GetString());
+            Assert.Equal("Dreamcast", body.GetProperty("system").GetString());
+            Assert.Equal("Sonic Adventure.gdi", body.GetProperty("fileName").GetString());
+            Assert.Equal("No EmulatorJS core for this system.", body.GetProperty("reason").GetString());
+            Assert.False(body.TryGetProperty("biosUrl", out _));
+        }
+        finally
+        {
+            Directory.Delete(temp.FullName, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task LaunchArcadeBios_PassesNeogeoZipAndRejectsAMissingBios()
     {
         var temp = Directory.CreateDirectory(Path.Combine(Path.GetTempPath(), "moonfin-launch-bios-" + Guid.NewGuid().ToString("N")));

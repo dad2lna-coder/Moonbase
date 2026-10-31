@@ -48,6 +48,13 @@
           err.textContent = 'Missing required parameters (core, rom).';
           return;
         }
+        // Flycast is not an EmulatorJS core. Say so instead of letting the loader fail.
+        if (String(core).toLowerCase() === 'dreamcast') {
+          var unsupported = document.getElementById('moonfin-error');
+          unsupported.style.display = 'block';
+          unsupported.textContent = "This system isn't supported in the web player.";
+          return;
+        }
         // Substituted by the server: self-hosted cores when installed, otherwise the CDN.
         window.EJS_player = '#game';
         window.EJS_core = core;

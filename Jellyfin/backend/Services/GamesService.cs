@@ -491,11 +491,13 @@ public class GamesService
                     continue;
                 }
 
+                var core = ResolveSystemCore(name, games);
                 systems.Add(new GameSystem
                 {
                     Id = name,
                     Name = name,
-                    Core = ResolveSystemCore(name, games),
+                    Core = core,
+                    EmulatorJsSupported = SupportsEmulatorJs(core),
                     GameCount = games.Count
                 });
             }
@@ -555,6 +557,7 @@ public class GamesService
                         Title = ResolveTitle(systemDir, rom),
                         System = systemName,
                         Core = core,
+                        EmulatorJsSupported = SupportsEmulatorJs(core),
                         FileName = Path.GetFileName(rom)
                     });
                 }
@@ -689,6 +692,7 @@ public class GamesService
             Title = title,
             System = resolution.SystemName,
             Core = core,
+            EmulatorJsSupported = SupportsEmulatorJs(core),
             FileName = servedName,
             SizeBytes = servedSize,
             Bios = bios,
@@ -887,6 +891,7 @@ public class GamesService
                 Id = platform.SystemId,
                 Name = platform.Name,
                 Core = platform.Core,
+                EmulatorJsSupported = SupportsEmulatorJs(platform.Core),
                 GameCount = counts[platform.Id],
             })
             .OrderBy(system => system.Name, StringComparer.OrdinalIgnoreCase)
@@ -917,6 +922,7 @@ public class GamesService
                 Title = game.Title,
                 System = platform.SystemId,
                 Core = platform.Core,
+                EmulatorJsSupported = SupportsEmulatorJs(platform.Core),
                 FileName = game.ServedName,
             });
         }
@@ -947,6 +953,7 @@ public class GamesService
             Title = game.Title,
             System = platform.SystemId,
             Core = platform.Core,
+            EmulatorJsSupported = SupportsEmulatorJs(platform.Core),
             FileName = game.ServedName,
             SizeBytes = game.ServedSizeBytes,
             Bios = platform.Firmware
@@ -1152,7 +1159,7 @@ public class GamesService
             Path.GetFileName(systemDir),
             Array.Empty<string>());
 
-        // One folder per game: pick the first recognized ROM inside each subfolder.
+        // One folder per game: pick the disc index (.gdi/.cue) or the first recognized ROM.
         foreach (var gameDir in SafeEnumerateDirectories(systemDir))
         {
             if (Path.GetFileName(gameDir).StartsWith('.'))
@@ -1160,31 +1167,100 @@ public class GamesService
                 continue;
             }
 
-            var rom = SafeEnumerateFiles(gameDir)
-                .FirstOrDefault(path => IsPlayableFileForCore(core, path) && !ArcadeBiosCatalog.IsSharedZip(path));
+            var rom = SelectGameFiles(core, SafeEnumerateFiles(gameDir).ToList(), one: true).FirstOrDefault();
             if (rom != null)
             {
                 roms.Add(rom);
             }
         }
 
-        // Also accept loose ROMs sitting directly in the system folder.
-        foreach (var file in SafeEnumerateFiles(systemDir))
-        {
-            if (IsPlayableFileForCore(core, file) && !ArcadeBiosCatalog.IsSharedZip(file))
-            {
-                roms.Add(file);
-            }
-        }
+        // Also accept loose ROMs sitting directly in the system folder. Tracks named by a
+        // .gdi or .cue in that folder are part of that disc, not extra games.
+        roms.AddRange(SelectGameFiles(core, SafeEnumerateFiles(systemDir).ToList(), one: false));
 
         return roms;
     }
+
+    private static IEnumerable<string> SelectGameFiles(string core, IReadOnlyList<string> files, bool one)
+    {
+        var tracks = GameSystemCoreResolver.DiscTrackNames(files);
+        var playable = new List<string>();
+        foreach (var file in files)
+        {
+            if (tracks.Contains(Path.GetFileName(file)) && !GameSystemCoreResolver.IsDiscIndex(file))
+            {
+                continue;
+            }
+
+            if (IsPlayableFileForCore(core, file) && !ArcadeBiosCatalog.IsSharedZip(file))
+            {
+                playable.Add(file);
+            }
+        }
+
+        if (!one || playable.Count == 0)
+        {
+            return playable;
+        }
+
+        string? best = null;
+        var rank = int.MaxValue;
+        foreach (var file in playable)
+        {
+            var next = DiscRank(file);
+            if (next < rank)
+            {
+                rank = next;
+                best = file;
+            }
+        }
+
+        return best == null ? Array.Empty<string>() : new[] { best };
+    }
+
+    // A .gdi is the Dreamcast disc, the same way a .cue is the disc for cue/bin. Either index
+    // beats a loose .chd/.cdi/.zip sitting in the same game folder.
+    private static int DiscRank(string path)
+    {
+        var extension = Path.GetExtension(path);
+        if (extension.Equals(".gdi", StringComparison.OrdinalIgnoreCase))
+        {
+            return 0;
+        }
+
+        if (extension.Equals(".cue", StringComparison.OrdinalIgnoreCase))
+        {
+            return 1;
+        }
+
+        return 2;
+    }
+
+    private static readonly string[] DreamcastBiosFiles = ["dc_boot.bin", "dc_flash.bin"];
 
     private List<GameBios> GetBiosFiles(string libraryId, string? systemDir, string romPath, string systemCore)
     {
         var bios = new List<GameBios>();
         if (systemDir == null)
         {
+            return bios;
+        }
+
+        // Flycast can high-level-emulate these. They are returned when present and never required.
+        if (GameSystemCoreResolver.IsDreamcastCore(systemCore))
+        {
+            foreach (var directory in DreamcastBiosDirectories(systemDir))
+            {
+                foreach (var name in DreamcastBiosFiles)
+                {
+                    var found = FindFile(directory, name);
+                    if (found != null)
+                    {
+                        AddBios(bios, libraryId, found, name);
+                    }
+                }
+            }
+
             return bios;
         }
 
@@ -1277,6 +1353,27 @@ public class GamesService
         return Directory.Exists(dir) ? dir : null;
     }
 
+    /// <summary>
+    /// Dreamcast BIOS lives in the library .bios/Dreamcast folder even when the ROM folder is
+    /// named dc or Sega Dreamcast. A matching folder under that name is also checked.
+    /// </summary>
+    private static IEnumerable<string> DreamcastBiosDirectories(string systemDir)
+    {
+        var root = Path.GetDirectoryName(systemDir);
+        if (string.IsNullOrEmpty(root))
+        {
+            yield break;
+        }
+
+        var canonical = Path.Combine(root, ".bios", "Dreamcast");
+        yield return canonical;
+        var named = Path.Combine(root, ".bios", Path.GetFileName(systemDir));
+        if (!string.Equals(named, canonical, StringComparison.OrdinalIgnoreCase))
+        {
+            yield return named;
+        }
+    }
+
     private static string? FindFile(string? directory, string? fileName)
     {
         if (string.IsNullOrEmpty(directory) || string.IsNullOrEmpty(fileName) || !Directory.Exists(directory))
@@ -1315,6 +1412,9 @@ public class GamesService
 
     internal static string ResolveSystemCore(string systemName, IReadOnlyList<string> games) =>
         GameSystemCoreResolver.ResolveSystemCore(systemName, games, out _);
+
+    /// <summary>False for Dreamcast. EmulatorJS has no core for it.</summary>
+    public static bool SupportsEmulatorJs(string? core) => GameSystemCoreResolver.SupportsEmulatorJs(core);
 
     /// <summary>
     /// Resolves the EmulatorJS core for a system folder (exact alias, then fuzzy alias, then file

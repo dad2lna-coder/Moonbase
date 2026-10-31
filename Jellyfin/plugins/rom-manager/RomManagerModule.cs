@@ -291,6 +291,11 @@ public sealed class RomManagerModule : IMoonbaseModule
             return LaunchAnswer(located, title, system, false, "BIOS is missing for this system.");
         }
 
+        if (!GamesService.SupportsEmulatorJs(located.Core))
+        {
+            return LaunchAnswer(located, title, system, false, "No EmulatorJS core for this system.");
+        }
+
         return LaunchAnswer(located, title, system, true, null, located.BiosUrl);
     }
 

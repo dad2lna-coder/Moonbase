@@ -29,6 +29,14 @@ public class GameSystem
     [JsonPropertyName("core")]
     public string Core { get; set; } = string.Empty;
 
+    /// <summary>
+    /// False when this core has no EmulatorJS build. Web clients should show the system as
+    /// unsupported instead of starting a player that cannot load it. Omitted nowhere: a missing
+    /// field on an older server means the client may still try.
+    /// </summary>
+    [JsonPropertyName("emulatorJsSupported")]
+    public bool EmulatorJsSupported { get; set; } = true;
+
     [JsonPropertyName("gameCount")]
     public int GameCount { get; set; }
 
@@ -186,6 +194,13 @@ public class GameSummary
 
     [JsonPropertyName("core")]
     public string Core { get; set; } = string.Empty;
+
+    /// <summary>
+    /// False when <see cref="Core"/> has no EmulatorJS build (Dreamcast). Web clients use this
+    /// to show the game as unsupported instead of failing inside the player.
+    /// </summary>
+    [JsonPropertyName("emulatorJsSupported")]
+    public bool EmulatorJsSupported { get; set; } = true;
 
     [JsonPropertyName("fileName")]
     public string FileName { get; set; } = string.Empty;

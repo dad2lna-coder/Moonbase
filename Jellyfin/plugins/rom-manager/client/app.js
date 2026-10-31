@@ -45,6 +45,7 @@
     n64: "M4 8h10v8H4zM14 10h6v4h-6z",
     psx: "M6 5h12v14H6zM9 9h6v6H9z",
     psp: "M3 7h18v10H3zM7 10h6v4H7z",
+    dreamcast: "M8 4h8l2 4v8a4 4 0 0 1-4 4h-4a4 4 0 0 1-4-4V8zM10 8h4",
     arcade: "M4 4h16v12H4zM8 20h8M9 16v4M15 16v4"
   };
   var GENERIC_ICON = "M7 6h10a3 3 0 0 1 3 3v2a2 2 0 0 1-2 2h-1v2H7v-2H6a2 2 0 0 1-2-2V9a3 3 0 0 1 3-3zM8 8h2M14 8h2";
@@ -68,6 +69,9 @@
     psx: "#4c8dff,#16306e",
     playstation: "#4c8dff,#16306e",
     psp: "#5c6778,#1b222c",
+    dreamcast: "#ff7a18,#16325c",
+    dc: "#ff7a18,#16325c",
+    segadreamcast: "#ff7a18,#16325c",
     arcade: "#ff5a36,#6d1c0c",
     mame: "#ff5a36,#6d1c0c",
     nds: "#c5d0dc,#3c4854",
@@ -83,6 +87,9 @@
       megadrive: "genesis",
       segagenesis: "genesis",
       playstation: "psx",
+      dreamcast: "dreamcast",
+      dc: "dreamcast",
+      segadreamcast: "dreamcast",
       nintendo64: "n64",
       gameboy: "gb",
       gameboycolor: "gb",
@@ -181,6 +188,7 @@
         gameId: result.gameId,
         title: result.title || game.title || ""
       };
+      if (result.core) play.core = result.core;
       if (result.biosUrl) play.biosUrl = result.biosUrl;
       return hostCall("playGame", play).then(function () {
         if (button) button.textContent = label;
