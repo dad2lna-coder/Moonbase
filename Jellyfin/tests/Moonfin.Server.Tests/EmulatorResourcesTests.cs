@@ -18,8 +18,31 @@ public class EmulatorResourcesTests
         Assert.Contains("<script src=\"moonfin-bridge.js\"></script>", player, StringComparison.Ordinal);
         Assert.Contains("params.get('bios')", player, StringComparison.Ordinal);
         Assert.Contains("window.EJS_biosUrl = bios", player, StringComparison.Ordinal);
+        Assert.Equal(1, CountOf(player, "window.EJS_biosUrl = bios"));
         Assert.True(
             player.IndexOf("moonfin-bridge.js", StringComparison.Ordinal) < player.IndexOf("loader.js", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void PlayerShell_ArcadeBiosIsAnExternalZipBeforeTheLoader()
+    {
+        var player = ReadResource("Moonfin.Server.EmulatorJS.player.html");
+
+        Assert.Contains("core.toLowerCase() === 'arcade'", player, StringComparison.Ordinal);
+        Assert.Contains("core.toLowerCase() === 'mame'", player, StringComparison.Ordinal);
+        Assert.Contains("params.get('biosName')", player, StringComparison.Ordinal);
+        Assert.Contains("params.get('parent')", player, StringComparison.Ordinal);
+        Assert.Contains("method: 'HEAD'", player, StringComparison.Ordinal);
+        Assert.Contains("credentials: 'same-origin'", player, StringComparison.Ordinal);
+        Assert.Contains("response.headers.get('Content-Disposition')", player, StringComparison.Ordinal);
+        Assert.Contains("files['/' + biosFileName] = bios", player, StringComparison.Ordinal);
+        Assert.Contains("files['/' + parentFileName] = parent", player, StringComparison.Ordinal);
+        Assert.Contains("window.EJS_externalFiles = files", player, StringComparison.Ordinal);
+        Assert.Contains("window.moonfinBeforeLoader", player, StringComparison.Ordinal);
+        Assert.Contains("if (ok === false) { return; }", player, StringComparison.Ordinal);
+        Assert.True(
+            player.IndexOf("moonfinBeforeLoader", StringComparison.Ordinal) < player.IndexOf("loader.js", StringComparison.Ordinal));
+        Assert.DoesNotContain("EJS_gameParentUrl", player, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -63,5 +86,18 @@ public class EmulatorResourcesTests
 
         using var reader = new StreamReader(stream);
         return reader.ReadToEnd();
+    }
+
+    private static int CountOf(string text, string needle)
+    {
+        var count = 0;
+        var index = 0;
+        while ((index = text.IndexOf(needle, index, StringComparison.Ordinal)) >= 0)
+        {
+            count++;
+            index += needle.Length;
+        }
+
+        return count;
     }
 }

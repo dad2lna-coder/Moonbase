@@ -61,8 +61,100 @@
         // Cartridge and single-threaded disc cores keep running without isolation.
         window.EJS_threads = !!self.crossOriginIsolated;
 
+        function showError(text) {
+          var err = document.getElementById('moonfin-error');
+          if (!err) { return; }
+          err.style.display = 'block';
+          err.textContent = text;
+        }
+
+        // A BIOS or parent archive name. Rejects paths so the FS key stays a single file.
+        function archiveName(value) {
+          if (value == null) { return null; }
+          var text = String(value).replace(/^\uFEFF/, '').trim();
+          if ((text.charAt(0) === '"' && text.charAt(text.length - 1) === '"') ||
+              (text.charAt(0) === "'" && text.charAt(text.length - 1) === "'")) {
+            text = text.slice(1, -1).trim();
+          }
+          try { text = decodeURIComponent(text); } catch (e) { /* already decoded */ }
+          var base = text.split(/[\\/]/).pop();
+          if (!base || base.indexOf('..') !== -1) { return null; }
+          if (!/^[^\\/]+\.(zip|7z)$/i.test(base)) { return null; }
+          return base;
+        }
+
+        function nameFromUrl(url) {
+          try {
+            return archiveName(new URL(url, location.href).pathname.split('/').pop());
+          } catch (e) {
+            return null;
+          }
+        }
+
+        function nameFromDisposition(header) {
+          if (!header) { return null; }
+          var star = /filename\*\s*=\s*[^']*''([^;]+)/i.exec(header);
+          if (star) {
+            var starred = archiveName(star[1].trim());
+            if (starred) { return starred; }
+          }
+          var quoted = /filename\s*=\s*"([^"]+)"/i.exec(header);
+          if (quoted) {
+            var fromQuotes = archiveName(quoted[1]);
+            if (fromQuotes) { return fromQuotes; }
+          }
+          var plain = /filename\s*=\s*([^;]+)/i.exec(header);
+          return plain ? archiveName(plain[1].trim()) : null;
+        }
+
+        function sameOrigin(url) {
+          try {
+            return new URL(url, location.href).origin === location.origin;
+          } catch (e) {
+            return false;
+          }
+        }
+
+        // biosName, then a .zip/.7z path segment, then Content-Disposition from a same-origin HEAD.
+        function resolveArchiveName(url, explicitName) {
+          var named = archiveName(explicitName);
+          if (named) { return Promise.resolve(named); }
+          var fromUrl = nameFromUrl(url);
+          if (fromUrl) { return Promise.resolve(fromUrl); }
+          if (!sameOrigin(url) || typeof fetch !== 'function') { return Promise.resolve(null); }
+          return fetch(url, { method: 'HEAD', credentials: 'same-origin' }).then(function (response) {
+            if (!response || !response.ok || !response.headers || !response.headers.get) { return null; }
+            return nameFromDisposition(response.headers.get('Content-Disposition'));
+          }).catch(function () { return null; });
+        }
+
+        function publish(files) {
+          if (files && Object.keys(files).length) { window.EJS_externalFiles = files; }
+          return true;
+        }
+
         var bios = params.get('bios');
-        if (bios) { window.EJS_biosUrl = bios; }
+        var parent = params.get('parent');
+        // Arcade and MAME must not use EJS_biosUrl. EmulatorJS unzips that download, so FBNeo
+        // never sees /neogeo.zip. EJS_externalFiles writes the raw archive before the ROM loads.
+        var arcade = core.toLowerCase() === 'arcade' || core.toLowerCase() === 'mame';
+        if (arcade && (bios || parent)) {
+          window.moonfinBeforeLoader = (bios ? resolveArchiveName(bios, params.get('biosName')) : Promise.resolve(null)).then(function (biosFileName) {
+            if (bios && !biosFileName) {
+              showError('Could not determine the arcade BIOS file name.');
+              return false;
+            }
+            var files = {};
+            if (biosFileName) { files['/' + biosFileName] = bios; }
+            if (!parent) { return publish(files); }
+            return resolveArchiveName(parent, null).then(function (parentFileName) {
+              if (parentFileName) { files['/' + parentFileName] = parent; }
+              return publish(files);
+            });
+          });
+        } else if (bios) {
+          window.EJS_biosUrl = bios;
+        }
 
         var save = params.get('save');
         if (save) { window.EJS_loadStateURL = save; }
@@ -315,12 +407,24 @@
       })();
 
       // Load the EmulatorJS loader from the resolved data path (self-host or CDN).
+      // Arcade BIOS (and an optional parent zip) must be named before this runs.
       (function () {
-        var base = window.EJS_pathtodata;
-        if (!base) { return; }
-        var s = document.createElement('script');
-        s.src = base + 'loader.js';
-        document.body.appendChild(s);
+        function load() {
+          var base = window.EJS_pathtodata;
+          if (!base) { return; }
+          var s = document.createElement('script');
+          s.src = base + 'loader.js';
+          document.body.appendChild(s);
+        }
+        var pending = window.moonfinBeforeLoader;
+        if (pending && typeof pending.then === 'function') {
+          pending.then(function (ok) {
+            if (ok === false) { return; }
+            load();
+          }, function () { /* do not start without the arcade zip name */ });
+        } else {
+          load();
+        }
       })();
     </script>
   </body>
