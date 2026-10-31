@@ -45,6 +45,18 @@ public class EmulatorResourcesTests
         Assert.Contains("Object.defineProperty(window, 'EJS_GameManager'", player, StringComparison.Ordinal);
         Assert.Contains("new Uint8Array(", player, StringComparison.Ordinal);
         Assert.Contains("Could not download ", player, StringComparison.Ordinal);
+        Assert.Contains("window.EJS_CacheLimit = 0", player, StringComparison.Ordinal);
+        Assert.Contains("autosave_interval = 0", player, StringComparison.Ordinal);
+        Assert.Contains("audio_latency = 32", player, StringComparison.Ordinal);
+        Assert.Contains("rewind_enable = false", player, StringComparison.Ordinal);
+        Assert.Contains("'save-save-interval': '0'", player, StringComparison.Ordinal);
+        Assert.Contains("video_shader_enable = false", player, StringComparison.Ordinal);
+        Assert.Contains("run_ahead_enabled = false", player, StringComparison.Ordinal);
+        Assert.Contains("performance.memory", player, StringComparison.Ordinal);
+        Assert.Contains("HEAPU8", player, StringComparison.Ordinal);
+        Assert.Contains("params.get('debug')", player, StringComparison.Ordinal);
+        Assert.Contains("moonfinDownloadBuffers", player, StringComparison.Ordinal);
+        Assert.Contains("buffer.transfer(0)", player, StringComparison.Ordinal);
         Assert.Contains("if (ok === false) { return; }", player, StringComparison.Ordinal);
         Assert.True(
             player.IndexOf("moonfinBeforeLoader", StringComparison.Ordinal) < player.IndexOf("loader.js", StringComparison.Ordinal));

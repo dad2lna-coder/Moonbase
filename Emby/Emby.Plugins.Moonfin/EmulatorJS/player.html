@@ -69,6 +69,53 @@
         // cross-origin isolated, which it does only for cores that require it (e.g. PSP).
         // Cartridge and single-threaded disc cores keep running without isolation.
         window.EJS_threads = !!self.crossOriginIsolated;
+        // Default cache limit is 1 GiB, so an 83 MB arcade zip is stored again in IndexedDB
+        // while the XHR buffer and the MEMFS copy are still alive.
+        window.EJS_CacheLimit = 0;
+
+        function isIos() {
+          var ua = (navigator && navigator.userAgent) || '';
+          if (/iP(hone|ad|od)/.test(ua)) { return true; }
+          return !!(navigator && navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+        }
+        window.moonfinIos = isIos();
+        if (window.moonfinIos) {
+          // fbneo-legacy-wasm draws in software. A retina WebGL buffer, rewind, and the
+          // 60s SRAM autosave are what grow until iOS jetsams the tab.
+          window.EJS_forceLegacyCores = true;
+          try {
+            Object.defineProperty(window, 'devicePixelRatio', {
+              configurable: true,
+              get: function () { return 1; }
+            });
+          } catch (e) { /* already fixed by the browser */ }
+          window.EJS_defaultOptions = {
+            rewindEnabled: 'disabled',
+            shader: 'disabled',
+            fastForward: 'disabled',
+            'ff-ratio': '1.0',
+            'save-save-interval': '0',
+            webgl2Enabled: 'disabled',
+            vsync: 'enabled'
+          };
+        }
+        if (params.get('debug') === '1') {
+          window.moonfinLogMemory = function () {
+            var jsHeap = null;
+            try {
+              if (typeof performance !== 'undefined' && performance.memory) {
+                jsHeap = performance.memory.usedJSHeapSize;
+              }
+            } catch (e) { /* Safari does not expose performance.memory */ }
+            var wasmHeap = 0;
+            try {
+              var heap = window.EJS_emulator && window.EJS_emulator.Module && window.EJS_emulator.Module.HEAPU8;
+              wasmHeap = heap ? heap.byteLength : 0;
+            } catch (e) { /* module not ready */ }
+            console.log('[moonfin] memory jsHeap=' + jsHeap + ' wasmHeap=' + wasmHeap);
+          };
+          window.moonfinMemoryTimer = setInterval(window.moonfinLogMemory, 5000);
+        }
 
         function showError(text) {
           var err = document.getElementById('moonfin-error');
@@ -434,7 +481,7 @@
         // Emscripten FS.writeFile rejects a raw ArrayBuffer ("Unsupported data type")
         // after creating a 0-byte file. loadExternalFiles hands it one. Convert first.
         function toUint8Array(data) {
-          if (!data) { return data; }
+          if (!data || typeof data === 'string') { return data; }
           if (typeof ArrayBuffer !== 'undefined' && ArrayBuffer.isView(data)) {
             return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
           }
@@ -442,12 +489,62 @@
           return data;
         }
 
+        function copyBytes(data) {
+          var view = toUint8Array(data);
+          var copy = new Uint8Array(view.byteLength);
+          copy.set(view);
+          return copy;
+        }
+
+        function releaseBuffer(buffer) {
+          if (!buffer || buffer.byteLength === 0) { return; }
+          try {
+            if (typeof buffer.transfer === 'function') { buffer.transfer(0); }
+          } catch (e) { /* shared or already detached */ }
+        }
+
+        // GameManager hardcodes autosave_interval = 60. That write is the timed growth:
+        // every minute RetroArch copies the SRAM (and FBNeo's save is not small) into a new
+        // JS buffer. Rewind and a 3x fast-forward ratio add more. iOS only.
+        function tuneRetroArchCfg(text) {
+          var lines = String(text).split('\n');
+          var out = [];
+          for (var i = 0; i < lines.length; i++) {
+            var line = lines[i];
+            if (/^\s*autosave_interval\s*=/.test(line)) { out.push('autosave_interval = 0'); continue; }
+            if (/^\s*audio_latency\s*=/.test(line)) { out.push('audio_latency = 32'); continue; }
+            if (/^\s*rewind_enable\s*=/.test(line)) { out.push('rewind_enable = false'); continue; }
+            if (/^\s*fastforward_ratio\s*=/.test(line)) { out.push('fastforward_ratio = 1.0'); continue; }
+            out.push(line);
+          }
+          out.push('rewind_enable = false');
+          out.push('video_shader_enable = false');
+          out.push('run_ahead_enabled = false');
+          return out.join('\n');
+        }
+
         function wrapWriteFile(Ctor) {
           var proto = Ctor && Ctor.prototype;
           if (!proto || typeof proto.writeFile !== 'function' || proto.writeFile.moonfinBytes) { return; }
           var original = proto.writeFile;
           function writeFile(path, data) {
-            return original.call(this, path, toUint8Array(data));
+            if (typeof data === 'string') {
+              if (window.moonfinIos && /retroarch\.cfg$/.test(String(path))) {
+                data = tuneRetroArchCfg(data);
+              }
+              return original.call(this, path, data);
+            }
+            var source = null;
+            if (data instanceof ArrayBuffer) { source = data; }
+            else if (typeof ArrayBuffer !== 'undefined' && ArrayBuffer.isView(data)) { source = data.buffer; }
+            var tracked = !!(source && window.moonfinDownloadBuffers && window.moonfinDownloadBuffers.has(source));
+            var bytes = tracked ? copyBytes(data) : toUint8Array(data);
+            var result = original.call(this, path, bytes);
+            if (tracked) {
+              window.moonfinDownloadBuffers.delete(source);
+              releaseBuffer(source);
+            }
+            return result;
           }
           writeFile.moonfinBytes = true;
           proto.writeFile = writeFile;
@@ -467,6 +564,8 @@
         } catch (e) { /* already sealed; wrap whatever is there */ }
         if (gameManager) { wrapWriteFile(gameManager); }
 
+        if (!window.moonfinDownloadBuffers) { window.moonfinDownloadBuffers = new WeakSet(); }
+
         function showDownloadError(path) {
           var err = document.getElementById('moonfin-error');
           if (!err) { return; }
@@ -475,15 +574,7 @@
         }
 
         function watchExternalDownloads() {
-          var files = window.EJS_externalFiles;
-          if (!files || window.moonfinExternalWatch || typeof XMLHttpRequest !== 'function') { return; }
-          var expected = [];
-          for (var key in files) {
-            var href = files[key];
-            try { href = new URL(files[key], location.href).href; } catch (e) { /* keep raw */ }
-            expected.push({ path: key, href: href });
-          }
-          if (!expected.length) { return; }
+          if (window.moonfinExternalWatch || typeof XMLHttpRequest !== 'function') { return; }
           window.moonfinExternalWatch = true;
           var Native = XMLHttpRequest;
           function PatchedXhr() {
@@ -496,9 +587,13 @@
               return open.apply(xhr, arguments);
             };
             function fail() {
-              for (var i = 0; i < expected.length; i++) {
-                if (expected[i].href === requestHref) {
-                  showDownloadError(expected[i].path);
+              var files = window.EJS_externalFiles;
+              if (!files) { return; }
+              for (var key in files) {
+                var href = files[key];
+                try { href = new URL(files[key], location.href).href; } catch (e) { /* keep raw */ }
+                if (href === requestHref) {
+                  showDownloadError(key);
                   return;
                 }
               }
@@ -506,6 +601,9 @@
             xhr.addEventListener('error', fail);
             xhr.addEventListener('abort', fail);
             xhr.addEventListener('load', function () {
+              if (xhr.response instanceof ArrayBuffer) {
+                window.moonfinDownloadBuffers.add(xhr.response);
+              }
               if (xhr.status >= 400) { fail(); }
             });
             return xhr;
@@ -513,11 +611,11 @@
           PatchedXhr.prototype = Native.prototype;
           window.XMLHttpRequest = PatchedXhr;
         }
+        watchExternalDownloads();
 
         function load() {
           var base = window.EJS_pathtodata;
           if (!base) { return; }
-          watchExternalDownloads();
           var s = document.createElement('script');
           s.src = base + 'loader.js';
           document.body.appendChild(s);

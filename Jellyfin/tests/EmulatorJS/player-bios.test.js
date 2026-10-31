@@ -274,4 +274,81 @@ for (const playerPath of players) {
     xhr.listeners.load();
     assert.equal(env.errors.at(-1), 'Could not download /neogeo.zip.');
   });
+
+  test(`${label} does not keep a second copy of a large ROM`, () => {
+    const env = run(html, '?core=arcade&rom=/svc.zip');
+    assert.equal(env.window.EJS_CacheLimit, 0);
+    assert.equal(env.window.moonfinIos, false);
+    assert.equal(env.window.EJS_defaultOptions, undefined);
+  });
+
+  test(`${label} frees a tracked download ArrayBuffer after writeFile`, () => {
+    const env = run(html, '?core=arcade&rom=/svc.zip');
+    const seen = [];
+    function GameManager() {}
+    GameManager.prototype.writeFile = function (filePath, data) { seen.push(data); };
+    env.window.EJS_GameManager = GameManager;
+    const raw = new Uint8Array([9, 8, 7, 6]).buffer;
+    env.window.moonfinDownloadBuffers.add(raw);
+    const gm = new env.window.EJS_GameManager();
+    gm.writeFile('/svc.zip', raw);
+    assert.ok(seen[0] instanceof Uint8Array);
+    assert.deepEqual(Array.from(seen[0]), [9, 8, 7, 6]);
+    assert.equal(raw.byteLength, 0);
+  });
+
+  test(`${label} iOS turns off the 60s autosave and the extra buffers`, () => {
+    const env = run(html, '?core=arcade&rom=/svc.zip', undefined, {
+      navigator: {
+        userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) AppleWebKit/605.1.15',
+        platform: 'iPhone',
+        maxTouchPoints: 5,
+        getGamepads: () => []
+      }
+    });
+    assert.equal(env.window.moonfinIos, true);
+    assert.equal(env.window.devicePixelRatio, 1);
+    assert.equal(env.window.EJS_forceLegacyCores, true);
+    assert.equal(env.window.EJS_defaultOptions.rewindEnabled, 'disabled');
+    assert.equal(env.window.EJS_defaultOptions.shader, 'disabled');
+    assert.equal(env.window.EJS_defaultOptions.fastForward, 'disabled');
+    assert.equal(env.window.EJS_defaultOptions['ff-ratio'], '1.0');
+    assert.equal(env.window.EJS_defaultOptions['save-save-interval'], '0');
+    assert.equal(env.window.EJS_defaultOptions.webgl2Enabled, 'disabled');
+    let written = '';
+    function GameManager() {}
+    GameManager.prototype.writeFile = function (filePath, data) { written = data; };
+    env.window.EJS_GameManager = GameManager;
+    const gm = new env.window.EJS_GameManager();
+    gm.writeFile(
+      '/home/web_user/.config/retroarch/retroarch.cfg',
+      'autosave_interval = 60\naudio_latency = 64\nfastforward_ratio = 3.0\nrewind_enable = true\nvideo_smooth = false\n'
+    );
+    assert.match(written, /autosave_interval = 0/);
+    assert.doesNotMatch(written, /autosave_interval = 60/);
+    assert.match(written, /audio_latency = 32/);
+    assert.match(written, /rewind_enable = false/);
+    assert.match(written, /fastforward_ratio = 1.0/);
+    assert.match(written, /video_shader_enable = false/);
+    assert.match(written, /run_ahead_enabled = false/);
+  });
+
+  test(`${label} debug=1 logs the JS heap and the WASM heap`, () => {
+    const logs = [];
+    const timer = {};
+    const env = run(html, '?core=snes&rom=/r.sfc&debug=1', undefined, {
+      console: { log: (...args) => logs.push(args.join(' ')) },
+      performance: { memory: { usedJSHeapSize: 1234 } },
+      setInterval(fn, ms) {
+        timer.fn = fn;
+        timer.ms = ms;
+        return 7;
+      }
+    });
+    assert.equal(timer.ms, 5000);
+    env.window.EJS_emulator = { Module: { HEAPU8: { byteLength: 4096 } } };
+    timer.fn();
+    assert.match(logs.at(-1), /jsHeap=1234/);
+    assert.match(logs.at(-1), /wasmHeap=4096/);
+  });
 }
