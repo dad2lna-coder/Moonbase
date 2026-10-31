@@ -295,6 +295,13 @@ public class GameBios
 
     [JsonPropertyName("sizeBytes")]
     public long SizeBytes { get; set; }
+
+    /// <summary>
+    /// Download path ending in the BIOS file name, for example <c>.../Bios/{id}/neogeo.zip</c>.
+    /// </summary>
+    [JsonPropertyName("url")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Url { get; set; }
 }
 
 /// <summary>Where a ROM on disk should be handed to the EmulatorJS player.</summary>
@@ -314,6 +321,22 @@ public sealed class GameLaunchTarget
 
     [JsonPropertyName("fileName")]
     public string FileName { get; set; } = string.Empty;
+
+    /// <summary>True when this ROM needs a shared arcade BIOS zip before it can boot.</summary>
+    [JsonIgnore]
+    public bool BiosRequired { get; set; }
+
+    /// <summary>Token of the BIOS file when it is on disk.</summary>
+    [JsonIgnore]
+    public string? BiosId { get; set; }
+
+    /// <summary>Canonical BIOS file name, such as neogeo.zip.</summary>
+    [JsonIgnore]
+    public string? BiosFileName { get; set; }
+
+    /// <summary>Relative BIOS URL whose last segment is <see cref="BiosFileName"/>.</summary>
+    [JsonIgnore]
+    public string? BiosUrl { get; set; }
 }
 
 public class RommTestResult

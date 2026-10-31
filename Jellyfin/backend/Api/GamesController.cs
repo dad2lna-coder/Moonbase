@@ -839,16 +839,20 @@ public class GamesController : ControllerBase
         string.Equals(role, "title", StringComparison.Ordinal);
 
     /// <summary>Streams a BIOS file required by a system's core, HEAD included for the same
-    /// cache check EmulatorJS runs on ROMs.</summary>
+    /// cache check EmulatorJS runs on ROMs. The optional file name is the archive name FBNeo
+    /// saves (neogeo.zip). It is not used to resolve the file. The old token-only route stays.</summary>
     [HttpGet("{libraryId}/Bios/{token}")]
+    [HttpGet("{libraryId}/Bios/{token}/{fileName}")]
     [HttpHead("{libraryId}/Bios/{token}")]
+    [HttpHead("{libraryId}/Bios/{token}/{fileName}")]
     [Authorize]
     [ProducesResponseType(StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
     public async Task<IActionResult> GetBios(
         [FromRoute] string libraryId,
         [FromRoute] string token,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        [FromRoute] string? fileName = null)
     {
         if (!GamesEnabled())
         {
@@ -866,7 +870,39 @@ public class GamesController : ControllerBase
         }
 
         var path = _gamesService.ResolveFilePath(libraryId, token, allowBios: true);
-        return StreamFile(path);
+        if (string.IsNullOrEmpty(path) || !System.IO.File.Exists(path))
+        {
+            return NotFound();
+        }
+
+        var downloadName = BiosRouteFileName(path, fileName);
+        return downloadName == null ? NotFound() : StreamFile(path, downloadName);
+    }
+
+    /// <summary>
+    /// The name the BIOS response is downloaded as. A missing route name keeps the old route
+    /// working. A route name is accepted only when it is the file's real or canonical name,
+    /// so the URL cannot relabel neogeo.zip.
+    /// </summary>
+    internal static string? BiosRouteFileName(string? path, string? fileName)
+    {
+        if (string.IsNullOrEmpty(path))
+        {
+            return null;
+        }
+
+        var actual = Path.GetFileName(path);
+        var canonical = ArcadeBiosCatalog.CanonicalZip(actual);
+        if (string.IsNullOrEmpty(fileName))
+        {
+            return canonical;
+        }
+
+        var requested = Path.GetFileName(fileName);
+        return string.Equals(requested, actual, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(requested, canonical, StringComparison.OrdinalIgnoreCase)
+            ? canonical
+            : null;
     }
 
     /// <summary>Reports whether self-hosted EmulatorJS cores are installed or downloading.</summary>
@@ -921,7 +957,7 @@ public class GamesController : ControllerBase
         return Accepted(_coresService.GetStatus());
     }
 
-    private IActionResult StreamFile(string? path)
+    private IActionResult StreamFile(string? path, string? downloadName = null)
     {
         if (string.IsNullOrEmpty(path) || !System.IO.File.Exists(path))
         {
@@ -929,7 +965,9 @@ public class GamesController : ControllerBase
         }
 
         // enableRangeProcessing lets EmulatorJS resume / seek large ROM downloads.
-        return PhysicalFile(path, "application/octet-stream", enableRangeProcessing: true);
+        return string.IsNullOrEmpty(downloadName)
+            ? PhysicalFile(path, "application/octet-stream", enableRangeProcessing: true)
+            : PhysicalFile(path, "application/octet-stream", downloadName, enableRangeProcessing: true);
     }
 
     // Unpacks a single-ROM .zip/.7z in memory so the client gets raw ROM bytes, exactly like an

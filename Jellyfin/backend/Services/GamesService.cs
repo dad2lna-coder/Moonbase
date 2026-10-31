@@ -660,7 +660,7 @@ public class GamesService
             overrideCore = null;
         }
         var core = overrideCore ?? arcade?.RecommendedCore ?? resolution.SystemCore;
-        var bios = resolution.SystemDir == null ? new List<GameBios>() : GetBiosFiles(resolution.SystemDir);
+        var bios = GetBiosFiles(resolution.Library.Id, resolution.SystemDir, resolution.RomPath, resolution.SystemCore);
         var title = ResolveTitle(resolution.SystemDir, resolution.RomPath);
 
         var archiveName = Path.GetFileName(resolution.RomPath);
@@ -1062,6 +1062,21 @@ public class GamesService
             return null;
         }
 
+        var systemCore = ResolveSystemCore(resolved.SystemName, new List<string> { full });
+        var biosName = IsArcadeFamilyCore(systemCore) &&
+            string.Equals(Path.GetExtension(full), ".zip", StringComparison.OrdinalIgnoreCase)
+            ? SharedBiosZipName(full)
+            : null;
+        string? biosId = null;
+        if (!string.IsNullOrEmpty(biosName) && resolved.SystemDir != null)
+        {
+            var biosPath = FindFile(HiddenBiosDirectory(resolved.SystemDir), biosName);
+            if (biosPath != null)
+            {
+                biosId = GamePathResolver.EncodeToken(biosPath);
+            }
+        }
+
         return new GameLaunchTarget
         {
             LibraryId = match.Id,
@@ -1069,6 +1084,12 @@ public class GamesService
             SystemName = resolved.SystemName,
             Core = EffectiveLaunchCore(resolved.SystemName, full),
             FileName = Path.GetFileName(full),
+            BiosRequired = !string.IsNullOrEmpty(biosName),
+            BiosId = biosId,
+            BiosFileName = biosName,
+            BiosUrl = biosId == null || string.IsNullOrEmpty(biosName)
+                ? null
+                : BiosDownloadUrl(match.Id, biosId, biosName),
         };
     }
 
@@ -1134,8 +1155,13 @@ public class GamesService
         // One folder per game: pick the first recognized ROM inside each subfolder.
         foreach (var gameDir in SafeEnumerateDirectories(systemDir))
         {
+            if (Path.GetFileName(gameDir).StartsWith('.'))
+            {
+                continue;
+            }
+
             var rom = SafeEnumerateFiles(gameDir)
-                .FirstOrDefault(path => IsPlayableFileForCore(core, path));
+                .FirstOrDefault(path => IsPlayableFileForCore(core, path) && !ArcadeBiosCatalog.IsSharedZip(path));
             if (rom != null)
             {
                 roms.Add(rom);
@@ -1145,7 +1171,7 @@ public class GamesService
         // Also accept loose ROMs sitting directly in the system folder.
         foreach (var file in SafeEnumerateFiles(systemDir))
         {
-            if (IsPlayableFileForCore(core, file))
+            if (IsPlayableFileForCore(core, file) && !ArcadeBiosCatalog.IsSharedZip(file))
             {
                 roms.Add(file);
             }
@@ -1154,29 +1180,119 @@ public class GamesService
         return roms;
     }
 
-    private static List<GameBios> GetBiosFiles(string systemDir)
+    private List<GameBios> GetBiosFiles(string libraryId, string? systemDir, string romPath, string systemCore)
     {
-        // BIOS files are loose files at the top of the system folder that are NOT ROMs.
         var bios = new List<GameBios>();
+        if (systemDir == null)
+        {
+            return bios;
+        }
+
+        // Loose BIOS at the top of the system folder. Zips there are ROMs, not BIOS.
         foreach (var file in SafeEnumerateFiles(systemDir))
         {
-            if (IsRomFile(file))
+            if (IsRomFile(file) || !GameSystemCoreResolver.IsBiosFile(file))
             {
                 continue;
             }
 
-            if (GameSystemCoreResolver.IsBiosFile(file))
+            AddBios(bios, libraryId, file, Path.GetFileName(file));
+        }
+
+        var hidden = HiddenBiosDirectory(systemDir);
+        if (IsArcadeFamilyCore(systemCore) &&
+            string.Equals(Path.GetExtension(romPath), ".zip", StringComparison.OrdinalIgnoreCase))
+        {
+            var zipName = SharedBiosZipName(romPath);
+            var found = FindFile(hidden, zipName);
+            if (found != null && !string.IsNullOrEmpty(zipName))
             {
-                bios.Add(new GameBios
-                {
-                    Id = GamePathResolver.EncodeToken(file),
-                    FileName = Path.GetFileName(file),
-                    SizeBytes = SafeFileLength(file)
-                });
+                AddBios(bios, libraryId, found, zipName);
             }
+
+            return bios;
+        }
+
+        if (hidden == null)
+        {
+            return bios;
+        }
+
+        foreach (var file in SafeEnumerateFiles(hidden))
+        {
+            var zip = string.Equals(Path.GetExtension(file), ".zip", StringComparison.OrdinalIgnoreCase);
+            if (!zip && !GameSystemCoreResolver.IsBiosFile(file))
+            {
+                continue;
+            }
+
+            AddBios(bios, libraryId, file, ArcadeBiosCatalog.CanonicalZip(Path.GetFileName(file)));
         }
 
         return bios;
+    }
+
+    private string? SharedBiosZipName(string romPath)
+    {
+        var romset = Path.GetFileNameWithoutExtension(romPath);
+        return _arcadeCompatibility != null
+            ? _arcadeCompatibility.SharedBiosZip(romset)
+            : ArcadeBiosCatalog.FallbackZip(romset);
+    }
+
+    private static void AddBios(List<GameBios> bios, string libraryId, string path, string fileName)
+    {
+        if (bios.Any(item => string.Equals(item.FileName, fileName, StringComparison.OrdinalIgnoreCase)))
+        {
+            return;
+        }
+
+        var id = GamePathResolver.EncodeToken(path);
+        bios.Add(new GameBios
+        {
+            Id = id,
+            FileName = fileName,
+            SizeBytes = SafeFileLength(path),
+            Url = BiosDownloadUrl(libraryId, id, fileName),
+        });
+    }
+
+    /// <summary>
+    /// BIOS download path whose last segment is the file name FBNeo requires (for example neogeo.zip).
+    /// </summary>
+    public static string BiosDownloadUrl(string libraryId, string token, string fileName) =>
+        "/Moonfin/Games/" + Uri.EscapeDataString(libraryId)
+        + "/Bios/" + Uri.EscapeDataString(token)
+        + "/" + Uri.EscapeDataString(fileName);
+
+    private static string? HiddenBiosDirectory(string systemDir)
+    {
+        var root = Path.GetDirectoryName(systemDir);
+        if (string.IsNullOrEmpty(root))
+        {
+            return null;
+        }
+
+        var dir = Path.Combine(root, ".bios", Path.GetFileName(systemDir));
+        return Directory.Exists(dir) ? dir : null;
+    }
+
+    private static string? FindFile(string? directory, string? fileName)
+    {
+        if (string.IsNullOrEmpty(directory) || string.IsNullOrEmpty(fileName) || !Directory.Exists(directory))
+        {
+            return null;
+        }
+
+        foreach (var file in SafeEnumerateFiles(directory))
+        {
+            if (string.Equals(Path.GetFileName(file), fileName, StringComparison.OrdinalIgnoreCase))
+            {
+                return file;
+            }
+        }
+
+        return null;
     }
 
     private static bool IsLooseRom(string? systemDir, string romPath)

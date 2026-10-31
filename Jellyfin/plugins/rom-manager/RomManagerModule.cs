@@ -281,15 +281,20 @@ public sealed class RomManagerModule : IMoonbaseModule
             return LaunchAnswer(null, title, game.Platform, false, "No game library covers this ROM.");
         }
 
+        if (located.BiosRequired && string.IsNullOrEmpty(located.BiosUrl))
+        {
+            return LaunchAnswer(located, title, system, false, "BIOS is missing for this system.");
+        }
+
         if (NeedsBios(located.Core, located.FileName, system) && !HasBios(romRoot, path.Split('/')[0]))
         {
             return LaunchAnswer(located, title, system, false, "BIOS is missing for this system.");
         }
 
-        return LaunchAnswer(located, title, system, true, null);
+        return LaunchAnswer(located, title, system, true, null, located.BiosUrl);
     }
 
-    private static PluginRouteResult LaunchAnswer(GameLaunchTarget? target, string title, string system, bool playable, string? reason)
+    private static PluginRouteResult LaunchAnswer(GameLaunchTarget? target, string title, string system, bool playable, string? reason, string? biosUrl = null)
     {
         return PluginRouteResult.Json(new
         {
@@ -302,6 +307,7 @@ public sealed class RomManagerModule : IMoonbaseModule
             system,
             playable,
             reason,
+            biosUrl = playable ? biosUrl : null,
         });
     }
 

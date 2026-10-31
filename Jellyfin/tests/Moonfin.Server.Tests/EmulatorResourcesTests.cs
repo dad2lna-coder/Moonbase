@@ -16,6 +16,8 @@ public class EmulatorResourcesTests
         var player = ReadResource("Moonfin.Server.EmulatorJS.player.html");
 
         Assert.Contains("<script src=\"moonfin-bridge.js\"></script>", player, StringComparison.Ordinal);
+        Assert.Contains("params.get('bios')", player, StringComparison.Ordinal);
+        Assert.Contains("window.EJS_biosUrl = bios", player, StringComparison.Ordinal);
         Assert.True(
             player.IndexOf("moonfin-bridge.js", StringComparison.Ordinal) < player.IndexOf("loader.js", StringComparison.Ordinal));
     }

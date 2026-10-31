@@ -176,11 +176,13 @@
         return;
       }
       remember(game.key);
-      return hostCall("playGame", {
+      var play = {
         libraryId: result.libraryId,
         gameId: result.gameId,
         title: result.title || game.title || ""
-      }).then(function () {
+      };
+      if (result.biosUrl) play.biosUrl = result.biosUrl;
+      return hostCall("playGame", play).then(function () {
         if (button) button.textContent = label;
       });
     }).catch(function (error) {

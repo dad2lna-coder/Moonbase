@@ -248,6 +248,69 @@ public class RomManagerRouteTests
     }
 
     [Fact]
+    public async Task LaunchArcadeBios_PassesNeogeoZipAndRejectsAMissingBios()
+    {
+        var temp = Directory.CreateDirectory(Path.Combine(Path.GetTempPath(), "moonfin-launch-bios-" + Guid.NewGuid().ToString("N")));
+        try
+        {
+            var romRoot = Path.Combine(temp.FullName, "roms");
+            var rom = Path.Combine(romRoot, "Arcade", "svc", "svc.zip");
+            Directory.CreateDirectory(Path.GetDirectoryName(rom)!);
+            using (var zip = System.IO.Compression.ZipFile.Open(rom, System.IO.Compression.ZipArchiveMode.Create))
+            using (var stream = zip.CreateEntry("chip.bin").Open())
+            {
+                stream.Write(new byte[] { 1, 2, 3, 4 });
+            }
+
+            var biosDir = Path.Combine(romRoot, ".bios", "Arcade");
+            Directory.CreateDirectory(biosDir);
+            File.WriteAllBytes(Path.Combine(biosDir, "pgm.zip"), [8]);
+            File.WriteAllBytes(Path.Combine(biosDir, "skns.zip"), [7]);
+
+            var library = DispatchProxy.Create<ILibraryManager, FolderLibrary>();
+            ((FolderLibrary)(object)library).Folders.Add(new VirtualFolderInfo
+            {
+                Name = "Retro Games",
+                ItemId = "retro-games",
+                Locations = new[] { romRoot },
+            });
+            var games = new GamesService(library);
+            var plugins = Directory.CreateDirectory(Path.Combine(temp.FullName, "plugins"));
+            Directory.CreateDirectory(Path.Combine(plugins.FullName, "rom-manager"));
+            var registry = new MoonfinPluginRegistry(new MoonbaseModuleCatalog(), plugins.FullName);
+            registry.WriteConfig("rom-manager", JsonSerializer.Serialize(new Dictionary<string, string> { ["romRoot"] = romRoot }));
+            var services = new ServiceCollection();
+            services.AddSingleton(registry);
+            services.AddSingleton(games);
+            var provider = services.BuildServiceProvider();
+            const string index = """{"items":[{"p":"Arcade/svc","s":"Arcade","t":"SVC Chaos","f":"svc.zip","z":10,"m":1,"mg":0}]}""";
+            var module = Module(_ => Text(HttpStatusCode.OK, index));
+
+            var missing = await Json(module.Launch(Req("""{"key":"p:Arcade/svc","p":"Arcade/svc"}""", services: provider)));
+            Assert.True(missing.GetProperty("ok").GetBoolean());
+            Assert.False(missing.GetProperty("playable").GetBoolean());
+            Assert.Equal("BIOS is missing for this system.", missing.GetProperty("reason").GetString());
+            Assert.False(missing.TryGetProperty("biosUrl", out _));
+
+            var neogeo = Path.Combine(biosDir, "neogeo.zip");
+            File.WriteAllBytes(neogeo, [9]);
+            var body = await Json(module.Launch(Req("""{"key":"p:Arcade/svc","p":"Arcade/svc"}""", services: provider)));
+            Assert.True(body.GetProperty("playable").GetBoolean());
+            var biosUrl = body.GetProperty("biosUrl").GetString();
+            Assert.NotNull(biosUrl);
+            Assert.StartsWith("/Moonfin/Games/retro-games/Bios/", biosUrl, StringComparison.Ordinal);
+            Assert.EndsWith("/neogeo.zip", biosUrl, StringComparison.Ordinal);
+            Assert.DoesNotContain("pgm.zip", biosUrl, StringComparison.Ordinal);
+            var token = biosUrl.Split('/')[^2];
+            Assert.Equal(Path.GetFullPath(neogeo), DecodeToken(token));
+        }
+        finally
+        {
+            Directory.Delete(temp.FullName, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task DuplicatesExposeCopyGroupsAndAVersionCount()
     {
         var body = await Json(Module(Library()).Duplicates(Req("{}", admin: true)));

@@ -43,6 +43,7 @@ test("the page has one play path and does not call forbidden routes", () => {
   assert.equal(app.split("function playGame(").length, 2);
   assert.match(app, /api\("launch"/);
   assert.match(app, /hostCall\("playGame"/);
+  assert.match(app, /if \(result\.biosUrl\) play\.biosUrl = result\.biosUrl/);
   assert.equal(app.includes("Playing from ROM Manager is coming soon"), false);
   assert.equal(app.includes("fetch("), false);
   assert.equal(app.includes("XMLHttpRequest"), false);

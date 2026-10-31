@@ -38,15 +38,15 @@ To point at a different base URL, `PUT /Moonfin/Admin/Plugins/rom-manager/Config
 
 `romManagerUrl` may also sit on the root of the config object. Only `http` and `https` URLs are accepted. The index is cached in memory and refreshed at most every 60 seconds. While Channel Manager answers 202, the page says the library is being indexed.
 
-ROM files are read from `romRoot` (default `/data/media/roms`). Set it the same way, as `settings.romRoot` or a top-level `romRoot`. A path containing `..` is ignored. On disk a version is `<romRoot>/<System>/<GameFolder>/<file>`. BIOS files, when a core needs them, live in `<romRoot>/.bios/<System>/` (NES FDS is the one present today: `.bios/NES/fdsbios.zip`).
+ROM files are read from `romRoot` (default `/data/media/roms`). Set it the same way, as `settings.romRoot` or a top-level `romRoot`. A path containing `..` is ignored. On disk a version is `<romRoot>/<System>/<GameFolder>/<file>`. BIOS files, when a core needs them, live in `<romRoot>/.bios/<System>/` (NES FDS is `.bios/NES/fdsbios.zip`). Arcade BIOS zips live in `.bios/Arcade/` (`neogeo.zip`, `pgm.zip`, `skns.zip`). A game is sent only the zip its romset needs, not every zip in that folder.
 
 ## Play
 
 `POST launch` with `{ "key", "p" }`. `key` must be a game in the index and `p` one of its versions. The path has to pass the same checks as every other ROM path, and it cannot be a trash path. The module asks `GamesService.LocateRomFile` for the library id, ROM token, system, core, and file name.
 
-The answer is `{ ok, libraryId, gameId, core, fileName, title, system, playable, reason }`. `playable` is false, with a plain reason, when no game library covers the file, when the system is PSP (`PSP is too heavy for iPhone`), when it is ColecoVision, MSX, or Channel F (`No emulator for this system yet`), or when a needed BIOS file is missing. ZX Spectrum uses the installed EmulatorJS 4.2.3 core name `fuse`.
+The answer is `{ ok, libraryId, gameId, core, fileName, title, system, playable, reason, biosUrl }`. `playable` is false, with a plain reason, when no game library covers the file, when the system is PSP (`PSP is too heavy for iPhone`), when it is ColecoVision, MSX, or Channel F (`No emulator for this system yet`), or when a needed BIOS file is missing. `biosUrl` is set only when play can start and the ROM needs a shared arcade BIOS. It is a `/Moonfin/Games/.../Bios/.../neogeo.zip` path (or `pgm.zip` / `skns.zip`) so EmulatorJS saves the file under that name. ZX Spectrum uses the installed EmulatorJS 4.2.3 core name `fuse`.
 
-The page calls that route from `playGame`. Only a playable result calls `hostCall("playGame", { libraryId, gameId, title })`. Otherwise the reason is a toast and the button says why. A playable game is written to the recent list before the handoff. The iframe is not navigated.
+The page calls that route from `playGame`. Only a playable result calls `hostCall("playGame", { libraryId, gameId, title, biosUrl })`. `biosUrl` is omitted when the ROM does not need one. Otherwise the reason is a toast and the button says why. A playable game is written to the recent list before the handoff. The iframe is not navigated.
 
 ## Safety
 

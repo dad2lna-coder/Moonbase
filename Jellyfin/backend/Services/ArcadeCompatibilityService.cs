@@ -298,6 +298,46 @@ public sealed class ArcadeCompatibilityService
         }
     }
 
+    private ArcadeBiosCatalog? _biosCatalog;
+    private FileStamp _biosCatalogStamp;
+
+    /// <summary>
+    /// The shared BIOS zip (neogeo.zip, pgm.zip, or skns.zip) this arcade romset needs, or null
+    /// when it needs none of those. FBNeo parent/BIOS info is used when that DAT is installed.
+    /// </summary>
+    internal string? SharedBiosZip(string romset)
+    {
+        var catalog = GetBiosCatalog();
+        if (catalog != null && catalog.TryResolve(romset, out var zip))
+        {
+            return zip;
+        }
+
+        return ArcadeBiosCatalog.FallbackZip(romset);
+    }
+
+    private ArcadeBiosCatalog? GetBiosCatalog()
+    {
+        var stamp = FileStamp.From(_fbneoDatPath);
+        if (_biosCatalogStamp == stamp)
+        {
+            return _biosCatalog;
+        }
+
+        lock (_indexLock)
+        {
+            stamp = FileStamp.From(_fbneoDatPath);
+            if (_biosCatalogStamp == stamp)
+            {
+                return _biosCatalog;
+            }
+
+            _biosCatalog = stamp.Exists ? ArcadeBiosCatalog.TryLoad(_fbneoDatPath) : null;
+            _biosCatalogStamp = stamp;
+            return _biosCatalog;
+        }
+    }
+
     private static string FallbackContentKey(string archivePath)
     {
         // Do not hash every archive on the library-list path before a DAT is installed. Core
