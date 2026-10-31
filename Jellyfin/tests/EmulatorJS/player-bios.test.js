@@ -43,7 +43,7 @@ function boot(search, fetchImpl) {
   return { errors, appended, window: windowObject, document, location, fetch: fetchImpl };
 }
 
-function run(html, search, fetchImpl) {
+function run(html, search, fetchImpl, extras) {
   const env = boot(search, fetchImpl || (async () => { throw new Error('unexpected fetch'); }));
   const sandbox = {
     window: env.window,
@@ -55,9 +55,16 @@ function run(html, search, fetchImpl) {
     URLSearchParams,
     Promise,
     decodeURIComponent,
+    ArrayBuffer,
+    Uint8Array,
+    Uint16Array,
+    DataView,
     requestAnimationFrame() {},
     navigator: { getGamepads: () => [] }
   };
+  if (extras) {
+    Object.keys(extras).forEach((key) => { sandbox[key] = extras[key]; });
+  }
   vm.runInNewContext(inlineScripts(html), sandbox, { filename: 'player.html' });
   return env;
 }
@@ -211,5 +218,60 @@ for (const playerPath of players) {
     assert.equal(ok, true);
     assert.equal(heads, 1);
     assert.deepEqual(filesOf(env.window), { '/neogeo.zip': bios });
+  });
+
+  test(`${label} fbneo and mame2003_plus keep the BIOS zip`, async () => {
+    const bios = '/Moonfin/Games/lib/Bios/tok/neogeo.zip';
+    for (const core of ['fbneo', 'mame2003', 'mame2003_plus']) {
+      const env = run(html, `?core=${core}&rom=/svc.zip&bios=${encodeURIComponent(bios)}`);
+      await env.window.moonfinBeforeLoader;
+      await settle();
+      assert.equal(env.window.EJS_biosUrl, undefined);
+      assert.deepEqual(filesOf(env.window), { '/neogeo.zip': bios });
+    }
+  });
+
+  test(`${label} writeFile converts an ArrayBuffer and views to Uint8Array`, () => {
+    const env = run(html, '?core=snes&rom=/r.sfc');
+    const seen = [];
+    function GameManager() {}
+    GameManager.prototype.writeFile = function (filePath, data) { seen.push(data); };
+    env.window.EJS_GameManager = GameManager;
+    const bytes = new Uint8Array([1, 2, 3, 4]);
+    const gm = new env.window.EJS_GameManager();
+    gm.writeFile('/neogeo.zip', bytes.buffer);
+    assert.ok(seen[0] instanceof Uint8Array);
+    assert.equal(seen[0].byteLength, 4);
+    assert.deepEqual(Array.from(seen[0]), [1, 2, 3, 4]);
+    const view = new Uint16Array([0x201]);
+    gm.writeFile('/pgm.zip', view);
+    assert.ok(seen[1] instanceof Uint8Array);
+    assert.deepEqual(Array.from(seen[1]), Array.from(new Uint8Array(view.buffer, view.byteOffset, view.byteLength)));
+  });
+
+  test(`${label} a failed external BIOS download is shown`, async () => {
+    function NativeXhr() {
+      this.status = 0;
+      this.listeners = {};
+    }
+    NativeXhr.prototype.open = function (method, url) { this.url = url; };
+    NativeXhr.prototype.send = function () {};
+    NativeXhr.prototype.addEventListener = function (name, fn) {
+      this.listeners[name] = fn;
+    };
+    const bios = '/Moonfin/Games/lib/Bios/tok/neogeo.zip?ApiKey=k';
+    const env = run(
+      html,
+      `?core=arcade&rom=/svc.zip&bios=${encodeURIComponent(bios)}`,
+      undefined,
+      { XMLHttpRequest: NativeXhr }
+    );
+    await env.window.moonfinBeforeLoader;
+    await settle();
+    const xhr = new env.window.XMLHttpRequest();
+    xhr.open('GET', bios);
+    xhr.status = 404;
+    xhr.listeners.load();
+    assert.equal(env.errors.at(-1), 'Could not download /neogeo.zip.');
   });
 }

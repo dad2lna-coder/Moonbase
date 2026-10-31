@@ -28,8 +28,11 @@ public class EmulatorResourcesTests
     {
         var player = ReadResource("Moonfin.Server.EmulatorJS.player.html");
 
-        Assert.Contains("core.toLowerCase() === 'arcade'", player, StringComparison.Ordinal);
-        Assert.Contains("core.toLowerCase() === 'mame'", player, StringComparison.Ordinal);
+        Assert.Contains("case 'arcade':", player, StringComparison.Ordinal);
+        Assert.Contains("case 'mame':", player, StringComparison.Ordinal);
+        Assert.Contains("case 'fbneo':", player, StringComparison.Ordinal);
+        Assert.Contains("case 'mame2003':", player, StringComparison.Ordinal);
+        Assert.Contains("case 'mame2003_plus':", player, StringComparison.Ordinal);
         Assert.Contains("params.get('biosName')", player, StringComparison.Ordinal);
         Assert.Contains("params.get('parent')", player, StringComparison.Ordinal);
         Assert.Contains("method: 'HEAD'", player, StringComparison.Ordinal);
@@ -39,6 +42,9 @@ public class EmulatorResourcesTests
         Assert.Contains("files['/' + parentFileName] = parent", player, StringComparison.Ordinal);
         Assert.Contains("window.EJS_externalFiles = files", player, StringComparison.Ordinal);
         Assert.Contains("window.moonfinBeforeLoader", player, StringComparison.Ordinal);
+        Assert.Contains("Object.defineProperty(window, 'EJS_GameManager'", player, StringComparison.Ordinal);
+        Assert.Contains("new Uint8Array(", player, StringComparison.Ordinal);
+        Assert.Contains("Could not download ", player, StringComparison.Ordinal);
         Assert.Contains("if (ok === false) { return; }", player, StringComparison.Ordinal);
         Assert.True(
             player.IndexOf("moonfinBeforeLoader", StringComparison.Ordinal) < player.IndexOf("loader.js", StringComparison.Ordinal));

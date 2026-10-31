@@ -14,6 +14,15 @@
         overflow: hidden;
       }
       #moonfin-error {
+        display: none;
+        position: fixed;
+        z-index: 30;
+        left: 0;
+        top: 0;
+        right: 0;
+        bottom: 0;
+        box-sizing: border-box;
+        background: #000;
         color: #fff;
         font-family: sans-serif;
         padding: 24px;
@@ -137,7 +146,20 @@
         var parent = params.get('parent');
         // Arcade and MAME must not use EJS_biosUrl. EmulatorJS unzips that download, so FBNeo
         // never sees /neogeo.zip. EJS_externalFiles writes the raw archive before the ROM loads.
-        var arcade = core.toLowerCase() === 'arcade' || core.toLowerCase() === 'mame';
+        // fbneo/mame2003 are the same zip cores under older client names.
+        var arcade = isArcadeFamily(core);
+        function isArcadeFamily(name) {
+          switch (String(name || '').toLowerCase()) {
+            case 'arcade':
+            case 'mame':
+            case 'fbneo':
+            case 'mame2003':
+            case 'mame2003_plus':
+              return true;
+            default:
+              return false;
+          }
+        }
         if (arcade && (bios || parent)) {
           window.moonfinBeforeLoader = (bios ? resolveArchiveName(bios, params.get('biosName')) : Promise.resolve(null)).then(function (biosFileName) {
             if (bios && !biosFileName) {
@@ -409,9 +431,93 @@
       // Load the EmulatorJS loader from the resolved data path (self-host or CDN).
       // Arcade BIOS (and an optional parent zip) must be named before this runs.
       (function () {
+        // Emscripten FS.writeFile rejects a raw ArrayBuffer ("Unsupported data type")
+        // after creating a 0-byte file. loadExternalFiles hands it one. Convert first.
+        function toUint8Array(data) {
+          if (!data) { return data; }
+          if (typeof ArrayBuffer !== 'undefined' && ArrayBuffer.isView(data)) {
+            return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+          }
+          if (data instanceof ArrayBuffer) { return new Uint8Array(data); }
+          return data;
+        }
+
+        function wrapWriteFile(Ctor) {
+          var proto = Ctor && Ctor.prototype;
+          if (!proto || typeof proto.writeFile !== 'function' || proto.writeFile.moonfinBytes) { return; }
+          var original = proto.writeFile;
+          function writeFile(path, data) {
+            return original.call(this, path, toUint8Array(data));
+          }
+          writeFile.moonfinBytes = true;
+          proto.writeFile = writeFile;
+        }
+
+        var gameManager = window.EJS_GameManager;
+        try {
+          Object.defineProperty(window, 'EJS_GameManager', {
+            configurable: true,
+            enumerable: true,
+            get: function () { return gameManager; },
+            set: function (value) {
+              gameManager = value;
+              wrapWriteFile(value);
+            }
+          });
+        } catch (e) { /* already sealed; wrap whatever is there */ }
+        if (gameManager) { wrapWriteFile(gameManager); }
+
+        function showDownloadError(path) {
+          var err = document.getElementById('moonfin-error');
+          if (!err) { return; }
+          err.style.display = 'block';
+          err.textContent = 'Could not download ' + path + '.';
+        }
+
+        function watchExternalDownloads() {
+          var files = window.EJS_externalFiles;
+          if (!files || window.moonfinExternalWatch || typeof XMLHttpRequest !== 'function') { return; }
+          var expected = [];
+          for (var key in files) {
+            var href = files[key];
+            try { href = new URL(files[key], location.href).href; } catch (e) { /* keep raw */ }
+            expected.push({ path: key, href: href });
+          }
+          if (!expected.length) { return; }
+          window.moonfinExternalWatch = true;
+          var Native = XMLHttpRequest;
+          function PatchedXhr() {
+            var xhr = new Native();
+            var requestHref = '';
+            var open = xhr.open;
+            xhr.open = function (method, url) {
+              requestHref = url;
+              try { requestHref = new URL(url, location.href).href; } catch (e) { /* keep raw */ }
+              return open.apply(xhr, arguments);
+            };
+            function fail() {
+              for (var i = 0; i < expected.length; i++) {
+                if (expected[i].href === requestHref) {
+                  showDownloadError(expected[i].path);
+                  return;
+                }
+              }
+            }
+            xhr.addEventListener('error', fail);
+            xhr.addEventListener('abort', fail);
+            xhr.addEventListener('load', function () {
+              if (xhr.status >= 400) { fail(); }
+            });
+            return xhr;
+          }
+          PatchedXhr.prototype = Native.prototype;
+          window.XMLHttpRequest = PatchedXhr;
+        }
+
         function load() {
           var base = window.EJS_pathtodata;
           if (!base) { return; }
+          watchExternalDownloads();
           var s = document.createElement('script');
           s.src = base + 'loader.js';
           document.body.appendChild(s);
