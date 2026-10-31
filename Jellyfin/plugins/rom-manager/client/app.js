@@ -4,6 +4,8 @@
     route: fmt.parseRoute(location.hash),
     query: "",
     sort: "title",
+    libraryView: "all",
+    consoleName: "",
     isAdmin: false,
     totals: { games: 0, roms: 0, bytes: 0 },
     systems: [],
@@ -30,6 +32,7 @@
     ["recent", "Recently Played", "M12 7v6l4 2M12 21a9 9 0 1 0-9-9"],
     ["collections", "Collections", "M4 7h16v12H4zM8 7V5h8v2"],
     ["platforms", "Platforms", "M4 8h16v10H4zM8 8V6h8v2"],
+    ["achievements", "Achievements", "M8 4h8v3a4 4 0 0 1-8 0zM8 7H6a2 2 0 0 0 2 2M16 7h2a2 2 0 0 1-2 2M12 14v3M9 20h6"],
     ["settings", "Settings", "M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8z"]
   ];
 
@@ -45,6 +48,31 @@
     arcade: "M4 4h16v12H4zM8 20h8M9 16v4M15 16v4"
   };
   var GENERIC_ICON = "M7 6h10a3 3 0 0 1 3 3v2a2 2 0 0 1-2 2h-1v2H7v-2H6a2 2 0 0 1-2-2V9a3 3 0 0 1 3-3zM8 8h2M14 8h2";
+  var GAMEPAD_ICON = "M6 9h12a3 3 0 0 1 3 3v2a3 3 0 0 1-3 3H6a3 3 0 0 1-3-3v-2a3 3 0 0 1 3-3zM8 13v3M6.5 14.5h3M16 14h.01M18 16h.01";
+  var CONSOLE_COLORS = {
+    nes: "#e23d3d,#7a1818",
+    famicom: "#e23d3d,#7a1818",
+    snes: "#7a5cff,#2a1868",
+    supernintendo: "#7a5cff,#2a1868",
+    superfamicom: "#7a5cff,#2a1868",
+    genesis: "#2f7bff,#102a55",
+    megadrive: "#2f7bff,#102a55",
+    segagenesis: "#2f7bff,#102a55",
+    gb: "#7dba4a,#214016",
+    gbc: "#7dba4a,#214016",
+    gameboy: "#7dba4a,#214016",
+    gba: "#8d5cc2,#31184a",
+    gameboyadvance: "#8d5cc2,#31184a",
+    n64: "#e0b03a,#5a3d08",
+    nintendo64: "#e0b03a,#5a3d08",
+    psx: "#4c8dff,#16306e",
+    playstation: "#4c8dff,#16306e",
+    psp: "#5c6778,#1b222c",
+    arcade: "#ff5a36,#6d1c0c",
+    mame: "#ff5a36,#6d1c0c",
+    nds: "#c5d0dc,#3c4854",
+    nintendods: "#c5d0dc,#3c4854"
+  };
 
   function platformIcon(system) {
     var key = String(system || "").toLowerCase().replace(/[^a-z0-9]/g, "");
@@ -211,6 +239,11 @@
     });
     var total = document.getElementById("total-games");
     if (total) total.textContent = String(state.totals.games || 0);
+    var used = document.getElementById("storage-used");
+    var fill = document.getElementById("storage-fill");
+    var bytes = Number(state.totals && state.totals.bytes) || 0;
+    if (used) used.textContent = fmt.formatBytes(bytes);
+    if (fill) fill.style.width = storagePercent(bytes) + "%";
   }
 
   function banner() {
@@ -231,8 +264,9 @@
     main.appendChild(el("div", { class: "banner", text: message || "Could not load the library." }));
   }
 
-  function cardEl(item) {
-    var card = el("div", { class: "card", tabindex: "0", "data-nav": "1", "data-open": item.key || "" });
+  function cardEl(item, opts) {
+    var library = opts && opts.library;
+    var card = el("div", { class: "card" + (library ? " library" : ""), tabindex: "0", "data-nav": "1", "data-open": item.key || "" });
     var art = el("div", { class: "art" });
     if (item.cover && item.coverPath) {
       art.setAttribute("data-cover", "1");
@@ -245,7 +279,11 @@
     img.hidden = true;
     art.appendChild(img);
     art.appendChild(platformIcon(item.system));
-    art.appendChild(el("span", { class: "badge", text: item.system || "" }));
+    if (!library) art.appendChild(el("span", { class: "badge", text: item.system || "" }));
+    if (library && Number(item.versions) > 1) {
+      art.classList.add("has-vers");
+      art.appendChild(el("span", { class: "ver-badge", text: item.versions + " Versions" }));
+    }
     var star = el("button", {
       class: "star" + (isFav(item.key) ? " on" : ""),
       type: "button",
@@ -259,7 +297,7 @@
     card.appendChild(art);
     var meta = el("div", { class: "meta" });
     meta.appendChild(el("strong", { class: "clamp", text: item.title || "Untitled" }));
-    meta.appendChild(el("div", { class: "tiny", text: item.system || "" }));
+    if (!library) meta.appendChild(el("div", { class: "tiny", text: item.system || "" }));
     card.appendChild(meta);
     return card;
   }
@@ -352,24 +390,107 @@
     }
   }
 
+  function consoleKey(system) {
+    return String(system || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+  }
+
+  function consoleGradient(system) {
+    var pair = (CONSOLE_COLORS[consoleKey(system)] || "#1d4e89,#101e30").split(",");
+    return "linear-gradient(165deg, " + pair[0] + ", " + pair[1] + ")";
+  }
+
+  function gamesLabel(count) {
+    var n = Number(count) || 0;
+    return n === 1 ? "1 Game" : n + " Games";
+  }
+
+  function storagePercent(bytes) {
+    var n = Number(bytes) || 0;
+    if (n <= 0) return 0;
+    var cap = Math.log10(100 * 1024 * 1024 * 1024);
+    var pct = Math.round((Math.log10(n) / cap) * 100);
+    if (pct < 8) pct = 8;
+    if (pct > 100) pct = 100;
+    return pct;
+  }
+
+  function sortLocal(items, mode) {
+    var list = (items || []).slice();
+    function title(item) { return String(item.title || "").toLowerCase(); }
+    function key(item) { return String(item.key || ""); }
+    list.sort(function (a, b) {
+      if (mode === "title-desc") return title(b).localeCompare(title(a)) || key(a).localeCompare(key(b));
+      if (mode === "added") return (Number(b.added) || 0) - (Number(a.added) || 0) || title(a).localeCompare(title(b));
+      if (mode === "size") return (Number(b.sizeBytes) || 0) - (Number(a.sizeBytes) || 0) || title(a).localeCompare(title(b));
+      return title(a).localeCompare(title(b)) || key(a).localeCompare(key(b));
+    });
+    return list;
+  }
+
+  function chosenConsole() {
+    if (state.route.system) state.consoleName = state.route.system;
+    if (!state.consoleName && state.systems[0]) state.consoleName = state.systems[0].system;
+    return state.consoleName || "";
+  }
+
+  function consoleRow(system) {
+    for (var i = 0; i < state.systems.length; i++) {
+      if (state.systems[i].system === system) return state.systems[i];
+    }
+    return null;
+  }
+
+  function browseHead() {
+    var head = el("div", { class: "page-head browse-head" });
+    var title = el("h1");
+    title.appendChild(svg(GAMEPAD_ICON));
+    title.appendChild(document.createTextNode("Browse by Console"));
+    head.appendChild(title);
+    return head;
+  }
+
+  function libraryBody(offset) {
+    var body = {
+      system: state.consoleName || "",
+      q: state.query || "",
+      sort: state.sort || "title",
+      offset: offset || 0,
+      limit: 48
+    };
+    if (state.libraryView === "favorites") body.keys = state.favorites.slice();
+    if (state.libraryView === "recent") body.keys = state.recent.slice();
+    return body;
+  }
+
+  function viewKeysEmpty() {
+    if (state.libraryView === "favorites") return state.favorites.length === 0;
+    if (state.libraryView === "recent") return state.recent.length === 0;
+    return false;
+  }
+
   async function renderLibrary(main) {
-    var system = state.route.system || "";
+    chosenConsole();
     clearMain(main);
-    main.appendChild(el("div", { class: "page-head" }, [
-      el("h1", { text: system || "Library" }),
-      el("span", { class: "tiny", text: "Loading…" })
-    ]));
+    main.appendChild(browseHead());
+    main.appendChild(el("p", { class: "muted", text: "Loading…" }));
     var token = state.token;
-    try {
-      var result = await api("games", {
-        system: system,
-        q: state.query || "",
-        sort: state.sort,
-        offset: 0,
-        limit: 48
-      });
+    if (!state.systems.length) {
       if (token !== state.token) return;
-      state.list = result.items || [];
+      drawLibrary(main);
+      return;
+    }
+    if (viewKeysEmpty()) {
+      state.list = [];
+      state.total = 0;
+      drawLibrary(main);
+      return;
+    }
+    try {
+      var result = await api("games", libraryBody(0));
+      if (token !== state.token) return;
+      var items = result.items || [];
+      if (state.libraryView !== "all") items = sortLocal(items, state.sort);
+      state.list = items;
       state.total = result.total || 0;
       state.indexing = !!result.indexing;
       drawLibrary(main);
@@ -380,57 +501,135 @@
 
   function drawLibrary(main) {
     clearMain(main);
-    var head = el("div", { class: "page-head" });
-    head.appendChild(el("h1", { text: state.route.system || "Library" }));
-    head.appendChild(el("span", { class: "tiny", text: state.total + " games" }));
-    main.appendChild(head);
-    var filters = el("div", { class: "filters" });
-    filters.appendChild(chip("All", "", !state.route.system));
-    state.systems.forEach(function (row) {
-      filters.appendChild(chip(row.system, row.system, state.route.system === row.system));
-    });
-    var sort = el("select", { class: "sort", "data-sort": "1", "aria-label": "Sort" });
-    [["title", "Title"], ["added", "Recently added"], ["year", "Year"]].forEach(function (pair) {
-      var option = el("option", { value: pair[0], text: pair[1] });
-      if (pair[0] === state.sort) option.setAttribute("selected", "selected");
-      sort.appendChild(option);
-    });
-    filters.appendChild(sort);
-    main.appendChild(filters);
+    var system = chosenConsole();
+    var rowInfo = consoleRow(system);
+    main.appendChild(browseHead());
+    main.appendChild(consoleCarousel(system));
+    var sub = el("div", { class: "library-sub" });
+    sub.appendChild(el("h2", { text: system || "Library" }));
+    sub.appendChild(el("span", { class: "tiny", text: gamesLabel(rowInfo ? rowInfo.games : state.total) }));
+    main.appendChild(sub);
+    main.appendChild(libraryTools());
+    if (!state.systems.length) {
+      main.appendChild(el("div", { class: "empty", text: state.indexing ? "Library is being indexed" : "No platforms yet." }));
+      return;
+    }
     if (!state.list.length) {
-      main.appendChild(el("div", { class: "empty", text: state.query ? "No games match that search." : "No games in this library yet." }));
+      var empty = "No games for this console yet.";
+      if (state.query) empty = "No games match that search.";
+      else if (state.libraryView === "favorites") empty = "No favorites for this console yet.";
+      else if (state.libraryView === "recent") empty = "No recently played games for this console yet.";
+      main.appendChild(el("div", { class: "empty", text: empty }));
       return;
     }
     var grid = el("div", { class: "grid" });
-    state.list.forEach(function (item) { grid.appendChild(cardEl(item)); });
+    state.list.forEach(function (item) { grid.appendChild(cardEl(item, { library: true })); });
     main.appendChild(grid);
     if (state.list.length < state.total) {
       main.appendChild(el("button", { type: "button", class: "text-btn", "data-nav": "1", "data-more": "1", text: "Load more" }));
     }
     watchCovers(main);
+    var selected = main.querySelector(".console[aria-pressed='true']");
+    if (selected && selected.scrollIntoView) selected.scrollIntoView({ inline: "nearest", block: "nearest" });
   }
 
-  function chip(label, system, active) {
-    return el("button", {
-      type: "button",
-      class: "chip" + (active ? " active" : ""),
-      "data-nav": "1",
-      "data-system": system,
-      text: label
+  function consoleCarousel(system) {
+    var row = el("div", { class: "console-row" });
+    row.appendChild(el("button", { type: "button", class: "console-arrow", "data-console-nav": "prev", "aria-label": "Previous consoles", text: "‹" }));
+    var scroller = el("div", { class: "console-scroll" });
+    state.systems.forEach(function (entry) {
+      var selected = entry.system === system;
+      var tile = el("button", {
+        type: "button",
+        class: "console" + (selected ? " selected" : ""),
+        "data-nav": "1",
+        "data-console": entry.system,
+        "aria-pressed": selected ? "true" : "false",
+        "aria-label": (entry.system || "Console") + ", " + gamesLabel(entry.games)
+      });
+      var face = el("span", { class: "console-face" });
+      face.style.background = consoleGradient(entry.system);
+      if (entry.logoUrl) {
+        face.appendChild(el("img", { alt: "", src: entry.logoUrl }));
+      }
+      face.appendChild(el("b", { text: entry.system || "ROM" }));
+      tile.appendChild(face);
+      tile.appendChild(el("span", { class: "tiny", text: gamesLabel(entry.games) }));
+      scroller.appendChild(tile);
     });
+    row.appendChild(scroller);
+    row.appendChild(el("button", { type: "button", class: "console-arrow", "data-console-nav": "next", "aria-label": "Next consoles", text: "›" }));
+    return row;
+  }
+
+  function libraryTools() {
+    var tools = el("div", { class: "filters" });
+    [["all", "All Games"], ["favorites", "Favorites"], ["recent", "Recently Played"]].forEach(function (pair) {
+      tools.appendChild(el("button", {
+        type: "button",
+        class: "chip" + (state.libraryView === pair[0] ? " active" : ""),
+        "data-nav": "1",
+        "data-lib-view": pair[0],
+        text: pair[1]
+      }));
+    });
+    var sort = el("select", { class: "sort", "data-sort": "1", "aria-label": "Sort" });
+    [["title", "Title A–Z"], ["title-desc", "Title Z–A"], ["added", "Recently Added"], ["size", "Size"]].forEach(function (pair) {
+      var option = el("option", { value: pair[0], text: pair[1] });
+      if (pair[0] === state.sort) option.setAttribute("selected", "selected");
+      sort.appendChild(option);
+    });
+    tools.appendChild(sort);
+    tools.appendChild(el("button", {
+      type: "button",
+      class: "icon-btn filter-btn",
+      "data-nav": "1",
+      "data-filter": "1",
+      "aria-label": "Filter",
+      text: "Filter"
+    }));
+    return tools;
+  }
+
+  function nudgeConsoles(dir) {
+    var scroller = document.querySelector(".console-scroll");
+    if (!scroller) return;
+    var delta = dir === "next" ? 168 : -168;
+    if (typeof scroller.scrollBy === "function") scroller.scrollBy({ left: delta, behavior: "smooth" });
+    else scroller.scrollLeft = (scroller.scrollLeft || 0) + delta;
+  }
+
+  function moveCarousel(dir) {
+    var tiles = Array.prototype.slice.call(document.querySelectorAll("#main .console"));
+    if (!tiles.length || !document.activeElement || !document.activeElement.closest) return false;
+    var current = document.activeElement.closest(".console");
+    if (!current) return false;
+    if (dir === "down") {
+      var card = document.querySelector("#main .grid .card");
+      if (card) {
+        card.focus();
+        if (card.scrollIntoView) card.scrollIntoView({ block: "nearest", inline: "nearest" });
+      }
+      return true;
+    }
+    if (dir !== "left" && dir !== "right") return false;
+    var index = tiles.indexOf(current);
+    var next = tiles[index + (dir === "right" ? 1 : -1)];
+    if (next) {
+      next.focus();
+      if (next.scrollIntoView) next.scrollIntoView({ block: "nearest", inline: "nearest" });
+    }
+    return true;
   }
 
   async function loadMore() {
+    if (viewKeysEmpty()) return;
     var token = state.token;
-    var result = await api("games", {
-      system: state.route.system || "",
-      q: state.query || "",
-      sort: state.sort,
-      offset: state.list.length,
-      limit: 48
-    });
+    var result = await api("games", libraryBody(state.list.length));
     if (token !== state.token) return;
-    state.list = state.list.concat(result.items || []);
+    var items = state.list.concat(result.items || []);
+    if (state.libraryView !== "all") items = sortLocal(items, state.sort);
+    state.list = items;
     state.total = result.total || state.total;
     drawLibrary(document.getElementById("main"));
   }
@@ -450,6 +649,12 @@
       grid.appendChild(tile);
     });
     main.appendChild(grid);
+  }
+
+  function renderAchievements(main) {
+    clearMain(main);
+    main.appendChild(el("div", { class: "page-head" }, [el("h1", { text: "Achievements" })]));
+    main.appendChild(el("div", { class: "empty", text: "Coming later" }));
   }
 
   function renderCollections(main) {
@@ -778,6 +983,7 @@
     if (name === "collections") return renderCollections(main);
     if (name === "collection") return renderKeyed(main, state.route.id || "Collection", keysFor(state.route.id), "This collection is empty.");
     if (name === "platforms") return renderPlatforms(main);
+    if (name === "achievements") return renderAchievements(main);
     if (name === "settings") return renderSettings(main);
     if (name === "game") return renderGame(main);
     if (name === "duplicates") return renderDuplicates(main);
@@ -1159,6 +1365,40 @@
     unwatch = watchDialog(cancel, ok, close);
   }
 
+  function filterDialog() {
+    var back = el("div", { class: "modal-back" });
+    var dialog = el("div", { class: "dialog", role: "dialog", "aria-modal": "true", "aria-label": "Filter" });
+    dialog.appendChild(el("h2", { text: "Filter" }));
+    var field = el("input", { value: state.query || "", placeholder: "Name, genre, or year", "aria-label": "Filter games" });
+    dialog.appendChild(field);
+    var actions = el("div", { class: "dlg-actions" });
+    var cancel = el("button", { type: "button", class: "text-btn", text: "Cancel" });
+    var clear = el("button", { type: "button", class: "text-btn", text: "Clear" });
+    var apply = el("button", { type: "button", class: "primary", text: "Apply" });
+    actions.appendChild(cancel);
+    actions.appendChild(clear);
+    actions.appendChild(apply);
+    dialog.appendChild(actions);
+    back.appendChild(dialog);
+    document.getElementById("modal").replaceChildren(back);
+    var unwatch = function () {};
+    function close() {
+      unwatch();
+      document.getElementById("modal").replaceChildren();
+    }
+    function commit(value) {
+      state.query = String(value || "").trim();
+      var searchBox = document.getElementById("search");
+      if (searchBox) searchBox.value = state.query;
+      close();
+      render();
+    }
+    cancel.addEventListener("click", close);
+    clear.addEventListener("click", function () { commit(""); });
+    apply.addEventListener("click", function () { commit(field.value); });
+    unwatch = watchDialog(cancel, apply, close);
+  }
+
   function moreMenu() {
     if (!state.current) return;
     var back = el("div", { class: "modal-back" });
@@ -1229,6 +1469,26 @@
       return;
     }
     if (event.target.closest("[data-dup]") || event.target.closest("label.check")) return;
+    var picked = event.target.closest("[data-console]");
+    if (picked) {
+      go({ name: "library", system: picked.getAttribute("data-console") || "" });
+      return;
+    }
+    var nudge = event.target.closest("[data-console-nav]");
+    if (nudge) {
+      nudgeConsoles(nudge.getAttribute("data-console-nav"));
+      return;
+    }
+    var view = event.target.closest("[data-lib-view]");
+    if (view) {
+      state.libraryView = view.getAttribute("data-lib-view") || "all";
+      render();
+      return;
+    }
+    if (event.target.closest("[data-filter]")) {
+      filterDialog();
+      return;
+    }
     var system = event.target.closest("[data-system]");
     if (system) {
       go({ name: "library", system: system.getAttribute("data-system") || "" });
@@ -1284,7 +1544,7 @@
     state.query = search.value.trim();
     clearTimeout(searchTimer);
     searchTimer = setTimeout(function () {
-      if (state.route.name !== "library" || state.route.system) go({ name: "library" });
+      if (state.route.name !== "library") go({ name: "library", system: state.consoleName || "" });
       else render();
     }, 250);
   });
@@ -1330,6 +1590,7 @@
     var map = { ArrowLeft: "left", ArrowRight: "right", ArrowUp: "up", ArrowDown: "down" };
     if (!map[event.key] || typing) return;
     event.preventDefault();
+    if (moveCarousel(map[event.key])) return;
     moveFocus(map[event.key]);
   });
 

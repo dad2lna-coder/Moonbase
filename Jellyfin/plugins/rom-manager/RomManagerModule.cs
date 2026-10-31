@@ -600,6 +600,11 @@ public sealed class RomManagerModule : IMoonbaseModule
 
     private async Task<PluginRouteResult> DuplicatesCore(PluginRouteRequest request)
     {
+        if (!request.IsAdmin)
+        {
+            return AdminOnly();
+        }
+
         var body = Body(request);
         var snapshot = await _channel.GetIndexAsync(request.Services, request.CancellationToken).ConfigureAwait(false);
         var platform = Str(body, "system");
@@ -930,6 +935,7 @@ public sealed class RomManagerModule : IMoonbaseModule
         genre = game.Genre,
         versions = game.Members.Count,
         sizeBytes = game.SizeBytes,
+        added = game.Added,
         coverPath = game.CoverPath,
         lb = game.Lb,
         cover = game.Cover == 0 ? (int?)null : game.Cover,

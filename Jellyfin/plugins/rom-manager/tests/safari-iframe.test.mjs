@@ -377,7 +377,7 @@ test("cover timeouts reset coverBusy and a stale cover does not paint the next p
     await stale.waitFor(() => stale.held.length === 1, "held cover");
     stale.clickGo("library");
     await stale.waitFor(() => {
-      return stale.heading() === "Library"
+      return stale.heading() === "Browse by Console"
         && !stale.main().textContent.includes("Loading")
         && stale.main().querySelectorAll("[data-cover]").length === 5;
     }, "library cards");
@@ -393,7 +393,7 @@ test("cover timeouts reset coverBusy and a stale cover does not paint the next p
       assert.equal(img.getAttribute("src"), null);
     });
     assert.equal(stale.heads().length, 1);
-    assert.equal(stale.heading(), "Library");
+    assert.equal(stale.heading(), "Browse by Console");
     assert.equal(stale.win.location.hash, stale.bootHash);
   } finally {
     stale.dom.window.close();

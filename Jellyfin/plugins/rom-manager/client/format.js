@@ -56,7 +56,7 @@
     if (head === "game") return { name: "game", key: safeDecode(rest) };
     if (head === "collection") return { name: "collection", id: safeDecode(rest) };
     if (head === "platform") return { name: "library", system: safeDecode(rest) };
-    if (head === "library" || head === "favorites" || head === "recent" || head === "collections" || head === "platforms" || head === "settings" || head === "duplicates" || head === "trash" || head === "more") {
+    if (head === "library" || head === "favorites" || head === "recent" || head === "collections" || head === "platforms" || head === "achievements" || head === "settings" || head === "duplicates" || head === "trash" || head === "more") {
       return { name: head };
     }
     return { name: "home" };

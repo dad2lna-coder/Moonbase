@@ -16,7 +16,7 @@ const card = {
   year: 1995,
   genre: "RPG",
   publisher: "Square",
-  versions: 1,
+  versions: 2,
   sizeBytes: 1050,
   cover: 1,
   coverPath: "SNES/Chrono"
@@ -66,12 +66,25 @@ function call(method, params) {
         ok: true,
         isAdmin: true,
         indexing: false,
-        systems: [{ system: "SNES", games: 1, roms: 2, bytes: 1050 }],
+        systems: [
+          { system: "SNES", games: 1, roms: 2, bytes: 1050, logoUrl: "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==" },
+          { system: "NES", games: 2, roms: 2, bytes: 800 }
+        ],
         totals: { games: 1, roms: 2, bytes: 1050 },
         status: { state: "ready" }
       });
     }
-    if (params.path === "games") return Promise.resolve({ ok: true, total: 1, items: [card], indexing: false });
+    if (params.path === "games") {
+      if (data.system === "NES" && !(data.keys && data.keys.length)) {
+        return Promise.resolve({
+          ok: true,
+          total: 1,
+          items: [{ key: "p:NES/Mario", title: "Super Mario Bros.", system: "NES", versions: 1 }],
+          indexing: false
+        });
+      }
+      return Promise.resolve({ ok: true, total: 1, items: [card], indexing: false });
+    }
     if (params.path === "game") return Promise.resolve({ ok: true, game, indexing: false });
     if (params.path === "duplicates") {
       return Promise.resolve({
@@ -201,6 +214,8 @@ test("every page renders, and restore or a duplicate tick does not leave the pag
   assert.match(document.getElementById("main").textContent, /Chrono Trigger/);
   assert.match(document.getElementById("side-nav").textContent, /Recently Played/);
   assert.equal(document.getElementById("total-games").textContent, "1");
+  assert.match(document.getElementById("storage-used").textContent, /1 KB/);
+  assert.ok(document.getElementById("storage-fill").style.width);
   assert.match(document.getElementById("clock").textContent, /^\d{2}:\d{2}$/);
   assert.ok(document.querySelector(".art .plat svg"));
   await assertPlaceholder(".art");
@@ -214,8 +229,48 @@ test("every page renders, and restore or a duplicate tick does not leave the pag
     button.click();
   }
 
+  async function until(check, label) {
+    for (let i = 0; i < 40; i++) {
+      if (check()) return;
+      await new Promise((resolve) => setTimeout(resolve, 15));
+    }
+    throw new Error(label + "\n" + errors.join("\n"));
+  }
+
+  clickGo("library");
+  const browse = await settle("Browse by Console");
+  assert.equal(document.querySelectorAll("#main .console").length, 2);
+  assert.equal(document.querySelector("#main .console[aria-pressed='true']").getAttribute("data-console"), "SNES");
+  assert.ok(document.querySelector("#main .console[data-console='SNES'] img"));
+  assert.equal(document.querySelector("#main .console[data-console='NES'] img"), null);
+  assert.match(browse, /1 Game/);
+  assert.match(browse, /2 Games/);
+  assert.match(browse, /2 Versions/);
+  assert.match(browse, /Chrono Trigger/);
+  assert.equal(document.querySelectorAll("#main [data-sort] option").length, 4);
+  const tiles = Array.from(document.querySelectorAll("#main .console"));
+  tiles[0].focus();
+  document.dispatchEvent(new window.KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true, cancelable: true }));
+  assert.equal(document.activeElement, tiles[1]);
+  document.dispatchEvent(new window.KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true, cancelable: true }));
+  assert.equal(document.activeElement.classList.contains("card"), true);
+  const forbidden = ["trash", "restore", "rescan", "deps", "trash-list"];
+  calls.forEach((entry) => {
+    const path = entry.params && entry.params.path ? String(entry.params.path) : "";
+    assert.equal(forbidden.indexOf(path), -1, path);
+    assert.equal(path.toLowerCase().includes("empty"), false, path);
+    assert.equal(path.toLowerCase().includes(["arcade", "refresh"].join("-")), false, path);
+  });
+  document.querySelector("#main [data-console='NES']").click();
+  await until(() => {
+    const text = document.getElementById("main").textContent || "";
+    return text.includes("Super Mario Bros.") && !text.includes("Loading") && !text.includes("2 Versions");
+  }, "nes grid");
+  assert.equal(document.querySelector("#main .console[aria-pressed='true']").getAttribute("data-console"), "NES");
+  assert.equal((document.querySelector("#main .grid").textContent || "").includes("Chrono Trigger"), false);
+  assert.ok(calls.some((entry) => entry.params && entry.params.path === "games" && entry.params.data && entry.params.data.system === "NES"));
+
   const pages = [
-    ["library", "Library"],
     ["platforms", "Platforms"]
   ];
   for (const [name, title] of pages) {
@@ -226,7 +281,8 @@ test("every page renders, and restore or a duplicate tick does not leave the pag
   }
 
   document.querySelector('#main [data-system="SNES"]').click();
-  await settle("SNES");
+  await settle("Browse by Console");
+  assert.match(document.getElementById("main").textContent, /Chrono Trigger/);
   assert.equal(window.location.hash, bootHash);
   document.querySelector("#main [data-open]").click();
   const gameText = await settle("Chrono Trigger");
@@ -244,14 +300,6 @@ test("every page renders, and restore or a duplicate tick does not leave the pag
   }
   document.querySelector('#main [data-tab="versions"]').click();
   assert.match(document.getElementById("main").textContent, /Available Versions \(2\)/);
-
-  async function until(check, label) {
-    for (let i = 0; i < 40; i++) {
-      if (check()) return;
-      await new Promise((resolve) => setTimeout(resolve, 15));
-    }
-    throw new Error(label + "\n" + errors.join("\n"));
-  }
 
   const unplayable = document.querySelector('#main [data-play="1"]');
   assert.ok(unplayable);
@@ -277,7 +325,7 @@ test("every page renders, and restore or a duplicate tick does not leave the pag
   const played = calls.findIndex((entry) => entry.method === "playGame");
   assert.ok(remembered >= 0 && remembered < played);
 
-  for (const [name, title] of [["favorites", "Favorites"], ["recent", "Recently Played"], ["collections", "Collections"], ["settings", "Settings"]]) {
+  for (const [name, title] of [["favorites", "Favorites"], ["recent", "Recently Played"], ["collections", "Collections"], ["achievements", "Achievements"], ["settings", "Settings"]]) {
     clickGo(name);
     const text = await settle(title);
     assert.equal(/not defined/i.test(text), false, text);
@@ -313,7 +361,7 @@ test("every page renders, and restore or a duplicate tick does not leave the pag
   assert.equal(document.querySelector(".dialog"), null);
 
   clickGo("library");
-  await settle("Library");
+  await settle("Browse by Console");
   document.querySelector("#main [data-open]").click();
   await settle("Chrono Trigger");
   const collect = document.querySelector("[data-collect]");
@@ -339,9 +387,10 @@ test("every page renders, and restore or a duplicate tick does not leave the pag
   document.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
 
   clickGo("library");
-  await settle("Library");
-  document.querySelector('[data-system="SNES"]').click();
-  await settle("SNES");
+  await settle("Browse by Console");
+  document.querySelector('[data-console="SNES"]').click();
+  await settle("Browse by Console");
+  assert.match(document.getElementById("main").textContent, /Chrono Trigger/);
   assert.equal(window.location.hash, bootHash);
   await new Promise((resolve) => setTimeout(resolve, 80));
   assert.equal(errors.length, 0, errors.join("\n"));

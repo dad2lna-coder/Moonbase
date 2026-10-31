@@ -695,11 +695,28 @@ public static class RomQuery
     public static List<GameRecord> Sort(List<GameRecord> games, string? sort)
     {
         var mode = (sort ?? "title").Trim();
-        IEnumerable<GameRecord> ordered = mode.Equals("added", StringComparison.OrdinalIgnoreCase)
-            ? games.OrderByDescending(game => game.Added).ThenBy(game => game.Title, StringComparer.OrdinalIgnoreCase)
-            : mode.Equals("year", StringComparison.OrdinalIgnoreCase)
-                ? games.OrderByDescending(game => game.Year.HasValue).ThenByDescending(game => game.Year ?? 0).ThenBy(game => game.Title, StringComparer.OrdinalIgnoreCase)
-                : games.OrderBy(game => game.Title, StringComparer.OrdinalIgnoreCase).ThenBy(game => game.Key, StringComparer.Ordinal);
+        IEnumerable<GameRecord> ordered;
+        if (mode.Equals("added", StringComparison.OrdinalIgnoreCase))
+        {
+            ordered = games.OrderByDescending(game => game.Added).ThenBy(game => game.Title, StringComparer.OrdinalIgnoreCase);
+        }
+        else if (mode.Equals("year", StringComparison.OrdinalIgnoreCase))
+        {
+            ordered = games.OrderByDescending(game => game.Year.HasValue).ThenByDescending(game => game.Year ?? 0).ThenBy(game => game.Title, StringComparer.OrdinalIgnoreCase);
+        }
+        else if (mode.Equals("title-desc", StringComparison.OrdinalIgnoreCase) || mode.Equals("za", StringComparison.OrdinalIgnoreCase))
+        {
+            ordered = games.OrderByDescending(game => game.Title, StringComparer.OrdinalIgnoreCase).ThenBy(game => game.Key, StringComparer.Ordinal);
+        }
+        else if (mode.Equals("size", StringComparison.OrdinalIgnoreCase))
+        {
+            ordered = games.OrderByDescending(game => game.SizeBytes).ThenBy(game => game.Title, StringComparer.OrdinalIgnoreCase);
+        }
+        else
+        {
+            ordered = games.OrderBy(game => game.Title, StringComparer.OrdinalIgnoreCase).ThenBy(game => game.Key, StringComparer.Ordinal);
+        }
+
         return ordered.ToList();
     }
 

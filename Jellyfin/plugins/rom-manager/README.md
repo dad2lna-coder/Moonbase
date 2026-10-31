@@ -53,6 +53,6 @@ The page calls that route from `playGame`. Only a playable result calls `hostCal
 - Move to trash lists every title, platform, and size, plus the total. Cancel is focused. If other games depend on the ROM, a second confirm is required.
 - Restore asks first too.
 - Identical copies are never pre-selected. **Best Experience** is a label, not a choice the plugin makes for you. Trash is only the copies you tick on the Duplicates page.
-- Admin buttons are hidden for everyone else. The module checks `IsAdmin` again.
+- Admin buttons are hidden for everyone else. The module checks `IsAdmin` again, including Duplicates.
 - Cover paths are checked before they are forwarded (no `..`, no absolute path, two segments, or three for a trash path). Images over 300 KB are dropped, and a response stays small enough for the plugin bridge.
 - Play is one function, `playGame`. It only talks to the `launch` route and the host player. It does not call Channel Manager write routes.

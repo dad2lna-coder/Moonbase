@@ -72,6 +72,11 @@ public class RomLibraryTests
         var byYear = RomQuery.Filter(games, null, null, null, "year");
         Assert.Equal("Chrono Trigger", byYear[0].Title);
 
+        var bySize = RomQuery.Filter(games, null, null, null, "size");
+        Assert.Equal("Chrono Trigger", bySize[0].Title);
+        var za = RomQuery.Filter(games, null, null, null, "title-desc");
+        Assert.Equal("p:NES/Mario", za[0].Key);
+
         var page = RomQuery.Page(RomQuery.Filter(games, null, null, null, "title"), 1, 1);
         Assert.Equal(games.Count, page.Total);
         Assert.Equal("Secret of Mana", Assert.Single(page.Page).Title);
@@ -245,12 +250,20 @@ public class RomManagerRouteTests
     [Fact]
     public async Task DuplicatesExposeCopyGroupsAndAVersionCount()
     {
-        var body = await Json(Module(Library()).Duplicates(Req("{}")));
+        var body = await Json(Module(Library()).Duplicates(Req("{}", admin: true)));
         Assert.Equal(1, body.GetProperty("total").GetInt32());
         Assert.Equal(1, body.GetProperty("versionGroups").GetInt32());
         var members = Assert.Single(body.GetProperty("groups").EnumerateArray()).GetProperty("members").EnumerateArray().ToList();
         Assert.Contains(members, member => member.GetProperty("ks").GetBoolean());
         Assert.Contains(members, member => !member.GetProperty("ks").GetBoolean());
+    }
+
+    [Fact]
+    public async Task DuplicatesAreAdminOnly()
+    {
+        var body = await Json(Module(Library()).Duplicates(Req("{}")));
+        Assert.False(body.GetProperty("ok").GetBoolean());
+        Assert.Equal("admin only", body.GetProperty("error").GetString());
     }
 
     [Fact]
@@ -601,7 +614,7 @@ public class RomManagerRouteTests
         await module.Games(Req("{}"));
         await module.Game(Req("""{"key":"p:NES/Mario"}"""));
         await module.Covers(Req("""{"items":[{"p":"NES/Mario","w":200}]}"""));
-        await module.Duplicates(Req("{}"));
+        await module.Duplicates(Req("{}", admin: admin));
         await module.Rescan(Req("{}", admin: admin));
         await module.TrashList(Req("{}", admin: admin));
         await module.Deps(Req("""{"paths":["NES/Mario"]}""", admin: admin));
