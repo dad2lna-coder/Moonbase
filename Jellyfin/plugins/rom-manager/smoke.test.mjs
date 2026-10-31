@@ -18,7 +18,8 @@ const card = {
   publisher: "Square",
   versions: 1,
   sizeBytes: 1050,
-  cover: 0
+  cover: 1,
+  coverPath: "SNES/Chrono"
 };
 
 const game = {
@@ -33,7 +34,8 @@ const game = {
   ratingCount: 12,
   versionsCount: 1,
   sizeBytes: 1050,
-  cover: 0,
+  cover: 1,
+  coverPath: "SNES/Chrono",
   versions: [{
     p: "SNES/Chrono",
     file: "Chrono Trigger (USA).sfc",
@@ -41,7 +43,7 @@ const game = {
     region: "USA",
     sizeBytes: 1050,
     best: true,
-    cover: 0
+    cover: 1
   }],
   related: []
 };
@@ -82,6 +84,13 @@ function call(method, params) {
         items: [{ p: "batch/NES/Mario", title: "Super Mario Bros.", system: "NES", sizeBytes: 400 }]
       });
     }
+    if (params.path === "covers") {
+      const covers = {};
+      ((data.items) || []).forEach((item) => {
+        covers[item.p] = "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==";
+      });
+      return Promise.resolve({ ok: true, covers });
+    }
     if (params.path === "deps") return Promise.resolve({ ok: true, warnings: [] });
     if (params.path === "trash" || params.path === "restore" || params.path === "rescan") return Promise.resolve({ ok: true });
     return Promise.resolve({ ok: true, ignored: data });
@@ -121,6 +130,9 @@ test("every page renders, and restore or a duplicate tick does not leave the pag
   run(readFileSync(join(root, "client/format.js"), "utf8"));
   run(readFileSync(join(root, "client/app.js"), "utf8"));
   const document = window.document;
+  const style = document.createElement("style");
+  style.textContent = readFileSync(join(root, "client/app.css"), "utf8");
+  document.head.appendChild(style);
 
   function heading() {
     const node = document.querySelector("#main h1");
@@ -137,10 +149,30 @@ test("every page renders, and restore or a duplicate tick does not leave the pag
     throw new Error("timed out waiting for " + expected + ": " + last + "\n" + errors.join("\n"));
   }
 
+  async function assertPlaceholder(selector) {
+    let node = null;
+    for (let i = 0; i < 40; i++) {
+      node = document.querySelector(selector);
+      const img = node && node.querySelector("img");
+      if (img && img.getAttribute("src")) break;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    assert.ok(node, "missing " + selector);
+    const img = node.querySelector("img");
+    const ph = node.querySelector(".ph");
+    assert.ok(img, selector + " img");
+    assert.ok(ph, selector + " placeholder");
+    img.dispatchEvent(new window.Event("load"));
+    assert.equal(window.getComputedStyle(ph).display, "none", selector + " stayed visible after the cover loaded");
+    img.dispatchEvent(new window.Event("error"));
+    assert.notEqual(window.getComputedStyle(ph).display, "none", selector + " stayed hidden after the cover failed");
+  }
+
   await settle("Home");
   assert.equal(document.querySelectorAll("#main .page-head").length, 1);
   assert.match(document.getElementById("main").textContent, /Recently Viewed/);
   assert.match(document.getElementById("main").textContent, /Chrono Trigger/);
+  await assertPlaceholder(".art");
   const bootHash = window.location.hash;
 
   function clickGo(name) {
@@ -169,6 +201,9 @@ test("every page renders, and restore or a duplicate tick does not leave the pag
   const gameText = await settle("Chrono Trigger");
   assert.equal(window.location.hash, bootHash);
   assert.equal(gameText.includes("Best Experience"), true);
+  await assertPlaceholder(".hero-bg");
+  await assertPlaceholder(".hero-thumb");
+  await assertPlaceholder(".version-banner");
   assert.equal(document.querySelector("[data-trash-best]"), null);
   assert.equal(document.querySelector("[data-trash]"), null);
   assert.equal(Array.from(document.querySelectorAll("#main button")).some((button) => button.textContent === "More"), false);

@@ -472,16 +472,26 @@
       bg.setAttribute("data-w", "400");
       if (game.lb) bg.setAttribute("data-lb", game.lb);
     }
+    var bgImg = el("img", { alt: "" });
+    bgImg.hidden = true;
+    bg.appendChild(bgImg);
+    bg.appendChild(el("span", { class: "ph", text: game.system || "ROM" }));
     hero.appendChild(bg);
     hero.appendChild(el("div", { class: "hero-shade" }));
     var body = el("div", { class: "hero-body" });
-    var cover = el("img", { class: "hero-cover", alt: "" });
+    var thumb = el("div", { class: "hero-thumb" });
     if (game.cover && game.coverPath) {
-      cover.setAttribute("data-cover-img", game.coverPath);
-    } else {
-      cover.alt = game.system || "";
+      thumb.setAttribute("data-cover", "1");
+      thumb.setAttribute("data-p", game.coverPath);
+      thumb.setAttribute("data-w", "400");
+      if (game.lb) thumb.setAttribute("data-lb", game.lb);
     }
-    body.appendChild(cover);
+    thumb.appendChild(el("span", { class: "ph", text: game.system || "ROM" }));
+    var cover = el("img", { class: "hero-cover", alt: "" });
+    cover.hidden = true;
+    if (!(game.cover && game.coverPath)) cover.alt = game.system || "";
+    thumb.appendChild(cover);
+    body.appendChild(thumb);
     var copy = el("div", { class: "hero-copy" });
     copy.appendChild(el("h1", { text: game.title || "Untitled" }));
     copy.appendChild(el("p", { text: fmt.joinParts([game.system, game.genre, game.year, game.publisher]) }));
@@ -555,6 +565,9 @@
         banner.setAttribute("data-w", "200");
         if (game.lb) banner.setAttribute("data-lb", game.lb);
       }
+      var bannerImg = el("img", { alt: "" });
+      bannerImg.hidden = true;
+      banner.appendChild(bannerImg);
       banner.appendChild(el("span", { class: "ph", text: game.system || "ROM" }));
       card.appendChild(banner);
       var info = el("div");
@@ -733,20 +746,27 @@
   function applyCover(covers) {
     Object.keys(covers).forEach(function (path) {
       var uri = covers[path];
+      if (!uri) return;
       document.querySelectorAll('[data-p="' + cssEscape(path) + '"]').forEach(function (node) {
         var img = node.querySelector("img");
-        if (img) {
-          img.src = uri;
+        if (!img) return;
+        img.onload = function () {
           img.hidden = false;
-        }
-        var ph = node.querySelector(".ph");
-        if (ph) ph.hidden = true;
-        if (node.classList.contains("hero-bg") || node.classList.contains("version-banner")) {
-          node.style.backgroundImage = 'url("' + uri + '")';
-        }
-      });
-      document.querySelectorAll("[data-cover-img]").forEach(function (img) {
-        if (img.getAttribute("data-cover-img") === path) img.src = uri;
+          node.classList.add("has-cover");
+          var ph = node.querySelector(".ph");
+          if (ph) ph.hidden = true;
+        };
+        img.onerror = function () {
+          img.hidden = true;
+          node.classList.remove("has-cover");
+          var ph = node.querySelector(".ph");
+          if (ph) ph.hidden = false;
+        };
+        img.hidden = true;
+        node.classList.remove("has-cover");
+        var pending = node.querySelector(".ph");
+        if (pending) pending.hidden = false;
+        img.src = uri;
       });
     });
   }
