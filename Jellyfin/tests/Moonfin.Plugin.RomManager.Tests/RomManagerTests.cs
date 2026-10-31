@@ -180,6 +180,21 @@ public class RomManagerRouteTests
     }
 
     [Fact]
+    public async Task DisableThenEnableStillServesRoutes()
+    {
+        var handler = new RecordingHandler(_ => Text(HttpStatusCode.OK, RomLibraryTests.SampleIndex));
+        var module = new RomManagerModule(handler);
+        var first = await Json(module.Systems(Req("{}")));
+        Assert.True(first.GetProperty("ok").GetBoolean());
+        var indexes = handler.Calls.Count(call => call.Uri.AbsolutePath.EndsWith("/index"));
+        module.OnStop();
+        ((IMoonbaseModule)module).OnStart(new ServiceCollection().BuildServiceProvider());
+        var second = await Json(module.Systems(Req("{}")));
+        Assert.True(second.GetProperty("ok").GetBoolean());
+        Assert.True(handler.Calls.Count(call => call.Uri.AbsolutePath.EndsWith("/index")) > indexes);
+    }
+
+    [Fact]
     public async Task IndexIsCachedForSixtySecondsAndSendsTheEtag()
     {
         var now = DateTimeOffset.Parse("2026-01-01T00:00:00Z");

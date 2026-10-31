@@ -42,7 +42,12 @@ public sealed class RomManagerModule : IMoonbaseModule
     {
     }
 
-    public void OnStop() => _channel.Dispose();
+    // Disable then enable calls OnStop and OnStart on this same instance.
+    // Disposing the channel would make every later route fail.
+    public void OnStop()
+    {
+        _channel.Invalidate();
+    }
 
     public void MapRoutes(IMoonbaseRouteTable routes)
     {

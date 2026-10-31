@@ -191,6 +191,32 @@ test("every page renders, and restore or a duplicate tick does not leave the pag
   assert.equal(document.activeElement.textContent, "Restore");
   document.dispatchEvent(new window.KeyboardEvent("keydown", { key: "ArrowLeft", bubbles: true, cancelable: true }));
   assert.equal(document.activeElement.textContent, "Cancel");
+  document.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+  assert.equal(document.querySelector(".dialog"), null);
+
+  show("#/game/" + encodeURIComponent(card.key));
+  await settle("Chrono Trigger");
+  const collect = document.querySelector("[data-collect]");
+  assert.ok(collect);
+  collect.click();
+  assert.equal(document.activeElement && document.activeElement.textContent, "Close");
+  const removeBtn = Array.from(document.querySelectorAll(".dialog button")).find((button) => button.textContent.startsWith("Remove from"));
+  assert.ok(removeBtn);
+  document.dispatchEvent(new window.KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true, cancelable: true }));
+  assert.equal(document.activeElement, removeBtn);
+  document.dispatchEvent(new window.KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true, cancelable: true }));
+  const name = document.querySelector(".dialog input");
+  assert.ok(name);
+  assert.equal(document.activeElement, name);
+  document.dispatchEvent(new window.KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true, cancelable: true }));
+  assert.equal(document.activeElement, name);
+  document.dispatchEvent(new window.KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true, cancelable: true }));
+  assert.equal(document.activeElement, name);
+  document.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Tab", bubbles: true, cancelable: true }));
+  assert.equal(document.activeElement.textContent, "Create");
+  document.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Tab", bubbles: true, cancelable: true }));
+  assert.equal(document.activeElement.textContent, "Close");
+  document.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
 
   show("#/library");
   await settle("Library");

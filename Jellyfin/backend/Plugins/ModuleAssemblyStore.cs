@@ -43,14 +43,8 @@ internal static class ModuleAssemblyStore
             var dest = Path.Combine(serverDir, name + ".mbmod");
             try
             {
-                if (File.Exists(dest))
-                {
-                    File.Delete(file);
-                }
-                else
-                {
-                    File.Move(file, dest);
-                }
+                // A bare dll next to an older .dll.mbmod is the newer copy. Replace, don't drop it.
+                File.Move(file, dest, overwrite: true);
             }
             catch (Exception ex)
             {

@@ -1,4 +1,5 @@
 using System.IO.Compression;
+using Microsoft.Extensions.Logging;
 
 namespace Moonfin.Server.Plugins;
 
@@ -71,7 +72,8 @@ public static class PluginZipInstaller
         Stream zip,
         string pluginsRoot,
         PluginZipLimits? limits = null,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        ILogger? logger = null)
     {
         limits ??= new PluginZipLimits();
         if (zip == null)
@@ -95,7 +97,7 @@ public static class PluginZipInstaller
                 zip = buffered;
             }
 
-            return Install(zip, pluginsRoot, limits);
+            return Install(zip, pluginsRoot, limits, logger);
         }
         catch (Exception)
         {
@@ -103,7 +105,7 @@ public static class PluginZipInstaller
         }
     }
 
-    public static PluginInstallResult Install(Stream zip, string pluginsRoot, PluginZipLimits? limits = null)
+    public static PluginInstallResult Install(Stream zip, string pluginsRoot, PluginZipLimits? limits = null, ILogger? logger = null)
     {
         limits ??= new PluginZipLimits();
         if (zip == null)
@@ -256,7 +258,9 @@ public static class PluginZipInstaller
 
                 // Rename before the folder is moved into place so a new install never
                 // lands a .dll where Jellyfin's plugin scan will pick it up.
-                ModuleAssemblyStore.HideServerAssemblies(staging);
+                ModuleAssemblyStore.HideServerAssemblies(
+                    staging,
+                    logger == null ? null : message => logger.LogWarning("Moonbase plugin: {Note}", message));
 
                 if (Directory.Exists(destinationFull))
                 {

@@ -338,6 +338,26 @@ public class PluginZipInstallerTests
         }
     }
 
+    [Fact]
+    public void ANewerDllReplacesTheHiddenModule()
+    {
+        var root = Directory.CreateDirectory(Path.Combine(Path.GetTempPath(), "moonfin-zip-" + Guid.NewGuid().ToString("N")));
+        try
+        {
+            var plugin = Path.Combine(root.FullName, "hello");
+            var server = Directory.CreateDirectory(Path.Combine(plugin, "server"));
+            File.WriteAllText(Path.Combine(server.FullName, "Moonfin.Plugin.Hello.dll.mbmod"), "old");
+            File.WriteAllText(Path.Combine(server.FullName, "Moonfin.Plugin.Hello.dll"), "new");
+            ModuleAssemblyStore.HideServerAssemblies(plugin);
+            Assert.False(File.Exists(Path.Combine(server.FullName, "Moonfin.Plugin.Hello.dll")));
+            Assert.Equal("new", File.ReadAllText(Path.Combine(server.FullName, "Moonfin.Plugin.Hello.dll.mbmod")));
+        }
+        finally
+        {
+            Directory.Delete(root.FullName, recursive: true);
+        }
+    }
+
     private static string PluginJson() =>
         """
         {"id":"hello","name":"Hello","version":"1.0.0","description":"Hi","provides":["hello.homeRow"],"requires":[],"slots":["homeRow"],"server":"HelloModule","minHostApi":1,"client":{"html":"client/index.html","js":"client/app.js"}}
@@ -487,6 +507,11 @@ public class HelloPluginSampleTests
         var serverAssembly = host.LoadFromAssemblyPath(serverDll);
         Assert.NotSame(typeof(IMoonbaseModule).Assembly, serverAssembly);
         Assert.Equal("Moonfin.Server", serverAssembly.GetName().Name);
+        var hostContext = AssemblyLoadContext.GetLoadContext(serverAssembly);
+        Assert.NotNull(hostContext);
+        Assert.NotSame(AssemblyLoadContext.Default, hostContext);
+        Assert.True(hostContext!.IsCollectible);
+        KeepAlive.Add(host);
 
         var root = Directory.CreateDirectory(Path.Combine(Path.GetTempPath(), "moonfin-alc-" + Guid.NewGuid().ToString("N")));
         try
@@ -534,6 +559,11 @@ public class HelloPluginSampleTests
             Assert.NotNull(contract);
             Assert.Same(serverAssembly, contract!.Assembly);
             Assert.NotSame(typeof(IMoonbaseModule).Assembly, contract.Assembly);
+            var moduleContext = AssemblyLoadContext.GetLoadContext(module.GetType().Assembly);
+            Assert.NotNull(moduleContext);
+            Assert.True(moduleContext!.IsCollectible);
+            Assert.NotSame(AssemblyLoadContext.Default, moduleContext);
+            Assert.NotSame(hostContext, moduleContext);
 
             var failed = ((System.Collections.IEnumerable)catalogType.GetMethod("FailedIds")!.Invoke(catalog, null)!).Cast<object>().Select(item => item?.ToString());
             Assert.DoesNotContain("hello", failed);
@@ -589,6 +619,8 @@ public class HelloPluginSampleTests
         }
     }
 
+    private static readonly List<AssemblyLoadContext> KeepAlive = new();
+
     private static IEnumerable<string> ReadStrings(object target, Type type, string property)
     {
         var value = type.GetProperty(property)!.GetValue(target);
@@ -598,7 +630,7 @@ public class HelloPluginSampleTests
     private sealed class JellyfinHostLoadContext : AssemblyLoadContext
     {
         public JellyfinHostLoadContext()
-            : base("jellyfin-plugin-host-sim", isCollectible: false)
+            : base("jellyfin-plugin-host-sim", isCollectible: true)
         {
             Resolving += (_, assemblyName) =>
             {

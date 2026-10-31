@@ -697,10 +697,11 @@ public sealed class MoonbaseModuleCatalog
     }
 
     /// <summary>
-    /// One context per module. Load and the Resolving handler both return this process's
-    /// Moonfin.Server — the copy that defined <see cref="IMoonbaseModule"/> — so the cast
-    /// in TryAdd is the same type Jellyfin loaded. Load has to answer: a null result lets
-    /// the default context supply its own Moonfin.Server before Resolving runs.
+    /// One context per module. It is collectible when Moonfin.Server is, because Jellyfin
+    /// loads that assembly in a collectible context and a non-collectible assembly cannot
+    /// reference it. Load and Resolving both return the copy that defined
+    /// <see cref="IMoonbaseModule"/>. Load has to answer: a null result lets the default
+    /// context supply its own Moonfin.Server before Resolving runs.
     /// </summary>
     private sealed class PluginModuleLoadContext : AssemblyLoadContext
     {
@@ -710,11 +711,14 @@ public sealed class MoonbaseModuleCatalog
         private string? _mainAssembly;
 
         public PluginModuleLoadContext(string id, string serverDir)
-            : base("moonfin-plugin-" + id + "-" + Interlocked.Increment(ref _sequence), isCollectible: false)
+            : base("moonfin-plugin-" + id + "-" + Interlocked.Increment(ref _sequence), HostIsCollectible())
         {
             _serverDir = serverDir;
             Resolving += (_, name) => ResolveDependency(name);
         }
+
+        private static bool HostIsCollectible() =>
+            AssemblyLoadContext.GetLoadContext(typeof(IMoonbaseModule).Assembly)?.IsCollectible ?? false;
 
         public Assembly LoadModule(string path)
         {

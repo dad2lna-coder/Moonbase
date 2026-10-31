@@ -728,19 +728,33 @@
   }
 
   function watchDialog(cancel, ok, onCancel) {
+    function focusables() {
+      var dialog = cancel.closest(".dialog") || document.body;
+      var nodes = dialog.querySelectorAll("a[href], button, input, select, textarea");
+      var list = [cancel];
+      Array.prototype.forEach.call(nodes, function (node) {
+        if (node === cancel || node === ok) return;
+        if (node.disabled || node.hidden || node.getAttribute("aria-disabled") === "true") return;
+        list.push(node);
+      });
+      if (ok && list.indexOf(ok) < 0) list.push(ok);
+      return list;
+    }
     function onKey(event) {
       if (event.key === "Escape") {
         event.preventDefault();
         onCancel();
         return;
       }
+      var active = document.activeElement;
+      var arrows = event.key === "ArrowRight" || event.key === "ArrowDown" || event.key === "ArrowLeft" || event.key === "ArrowUp";
+      if (arrows && active && active.tagName === "INPUT") return;
       var step = 0;
       if (event.key === "Tab") step = event.shiftKey ? -1 : 1;
-      else if (event.key === "ArrowRight" || event.key === "ArrowDown") step = 1;
-      else if (event.key === "ArrowLeft" || event.key === "ArrowUp") step = -1;
+      else if (arrows) step = event.key === "ArrowLeft" || event.key === "ArrowUp" ? -1 : 1;
       if (!step) return;
-      var items = [cancel, ok];
-      var index = items.indexOf(document.activeElement);
+      var items = focusables();
+      var index = items.indexOf(active);
       if (index < 0) index = 0;
       event.preventDefault();
       event.stopPropagation();

@@ -7,6 +7,7 @@ using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Http.Features;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.Logging;
 using Moonfin.Server.Plugins;
 
 namespace Moonfin.Server.Api;
@@ -45,11 +46,16 @@ public class MoonfinPluginsController : ControllerBase
 
     private readonly MoonfinPluginRegistry _registry;
     private readonly MoonbaseModuleCatalog _catalog;
+    private readonly ILogger<MoonfinPluginsController>? _logger;
 
-    public MoonfinPluginsController(MoonfinPluginRegistry registry, MoonbaseModuleCatalog catalog)
+    public MoonfinPluginsController(
+        MoonfinPluginRegistry registry,
+        MoonbaseModuleCatalog catalog,
+        ILogger<MoonfinPluginsController>? logger = null)
     {
         _registry = registry;
         _catalog = catalog;
+        _logger = logger;
     }
 
     [HttpGet("Plugins")]
@@ -391,8 +397,11 @@ public class MoonfinPluginsController : ControllerBase
 
         try
         {
-            var result = await PluginZipInstaller.InstallAsync(stream, _registry.Root, cancellationToken: cancellationToken)
-                .ConfigureAwait(false);
+            var result = await PluginZipInstaller.InstallAsync(
+                stream,
+                _registry.Root,
+                cancellationToken: cancellationToken,
+                logger: _logger).ConfigureAwait(false);
             if (!result.Ok)
             {
                 return BadRequest(new { error = result.Error });

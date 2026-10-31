@@ -27,12 +27,12 @@ public sealed class MoonfinPluginLifecycle : IHostedService
     {
         try
         {
+            _catalog.EnsureExternalLoaded(_registry.Root);
             foreach (var note in _catalog.Notes)
             {
                 _logger.LogWarning("Moonbase plugin: {Note}", note);
             }
 
-            _catalog.EnsureExternalLoaded(_registry.Root);
             _catalog.StartWhere(
                 _services,
                 id => _registry.IsActive(id),
