@@ -309,6 +309,7 @@ public sealed class RdbUpdateCheckTests : IDisposable
         var store = Store(handler);
 
         var index = await store.GetIndexAsync(Platform, Config(BaseUrl));
+        await store.EnsureUpdateCheckedAsync(Platform, Config(BaseUrl));
 
         Assert.NotNull(index);
         Assert.Contains(RdbMatcher.NormalizeName("Alpha"), index!.ByName.Keys);
