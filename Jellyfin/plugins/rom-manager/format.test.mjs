@@ -44,6 +44,10 @@ test("the page has one play path and does not call forbidden routes", () => {
   assert.match(app, /Playing from ROM Manager is coming soon/);
   assert.equal(app.includes("fetch("), false);
   assert.equal(app.includes("XMLHttpRequest"), false);
+  assert.equal(/\blocation\.hash\s*=/.test(app), false);
+  assert.equal(app.includes("pushState"), false);
+  assert.equal(app.includes("replaceState"), false);
+  assert.equal(app.includes("hashchange"), false);
   const bannedA = ["romman", "empty"].join("/");
   const bannedB = ["arcade", "refresh"].join("-");
   for (const source of [app, css, html]) {

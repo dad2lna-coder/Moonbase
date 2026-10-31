@@ -137,55 +137,69 @@ test("every page renders, and restore or a duplicate tick does not leave the pag
     throw new Error("timed out waiting for " + expected + ": " + last + "\n" + errors.join("\n"));
   }
 
-  function show(hash) {
-    window.location.hash = hash;
-    window.dispatchEvent(new window.HashChangeEvent("hashchange"));
-  }
-
   await settle("Home");
+  assert.equal(document.querySelectorAll("#main .page-head").length, 1);
   assert.match(document.getElementById("main").textContent, /Recently Viewed/);
   assert.match(document.getElementById("main").textContent, /Chrono Trigger/);
+  const bootHash = window.location.hash;
+
+  function clickGo(name) {
+    const button = document.querySelector(`#sidebar [data-go="${name}"]`)
+      || document.querySelector(`#tabbar [data-go="${name}"]`)
+      || document.querySelector(`#main [data-go="${name}"]`);
+    assert.ok(button, "missing " + name);
+    button.click();
+  }
 
   const pages = [
-    ["#/library", "Library"],
-    ["#/platforms", "Platforms"],
-    ["#/platform/SNES", "SNES"],
-    ["#/game/" + encodeURIComponent(card.key), "Chrono Trigger"],
-    ["#/favorites", "Favorites"],
-    ["#/recent", "Recently Viewed"],
-    ["#/collections", "Collections"],
-    ["#/settings", "Settings"],
-    ["#/duplicates", "Identical copies"],
-    ["#/trash", "Trash"]
+    ["library", "Library"],
+    ["platforms", "Platforms"]
   ];
-  for (const [hash, title] of pages) {
-    show(hash);
+  for (const [name, title] of pages) {
+    clickGo(name);
     const text = await settle(title);
     assert.equal(/not defined/i.test(text), false, text);
+    assert.equal(window.location.hash, bootHash);
   }
-  assert.equal(errors.length, 0, errors.join("\n"));
 
-  show("#/game/" + encodeURIComponent(card.key));
+  document.querySelector('#main [data-system="SNES"]').click();
+  await settle("SNES");
+  assert.equal(window.location.hash, bootHash);
+  document.querySelector("#main [data-open]").click();
   const gameText = await settle("Chrono Trigger");
+  assert.equal(window.location.hash, bootHash);
   assert.equal(gameText.includes("Best Experience"), true);
   assert.equal(document.querySelector("[data-trash-best]"), null);
   assert.equal(document.querySelector("[data-trash]"), null);
   assert.equal(Array.from(document.querySelectorAll("#main button")).some((button) => button.textContent === "More"), false);
 
-  show("#/duplicates");
+  for (const [name, title] of [["favorites", "Favorites"], ["recent", "Recently Viewed"], ["collections", "Collections"], ["settings", "Settings"]]) {
+    clickGo(name);
+    const text = await settle(title);
+    assert.equal(/not defined/i.test(text), false, text);
+    assert.equal(window.location.hash, bootHash);
+  }
+
+  clickGo("more");
+  await settle("More");
+  document.querySelector('#main [data-go="duplicates"]').click();
   await settle("Identical copies");
   const box = document.querySelector("[data-dup]");
   assert.ok(box);
   box.click();
   assert.equal(box.checked, true);
-  assert.equal(window.location.hash, "#/duplicates");
+  assert.equal(heading(), "Identical copies");
+  assert.equal(window.location.hash, bootHash);
 
-  show("#/trash");
+  clickGo("more");
+  await settle("More");
+  document.querySelector('#main [data-go="trash"]').click();
   await settle("Trash");
   const restore = Array.from(document.querySelectorAll("button")).find((button) => button.textContent === "Restore");
   assert.ok(restore);
   restore.click();
-  assert.equal(window.location.hash, "#/trash");
+  assert.equal(heading(), "Trash");
+  assert.equal(window.location.hash, bootHash);
   assert.equal(document.activeElement && document.activeElement.textContent, "Cancel");
   document.dispatchEvent(new window.KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true, cancelable: true }));
   assert.equal(document.activeElement.textContent, "Restore");
@@ -194,7 +208,9 @@ test("every page renders, and restore or a duplicate tick does not leave the pag
   document.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
   assert.equal(document.querySelector(".dialog"), null);
 
-  show("#/game/" + encodeURIComponent(card.key));
+  clickGo("library");
+  await settle("Library");
+  document.querySelector("#main [data-open]").click();
   await settle("Chrono Trigger");
   const collect = document.querySelector("[data-collect]");
   assert.ok(collect);
@@ -218,11 +234,11 @@ test("every page renders, and restore or a duplicate tick does not leave the pag
   assert.equal(document.activeElement.textContent, "Close");
   document.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
 
-  show("#/library");
+  clickGo("library");
   await settle("Library");
   document.querySelector('[data-system="SNES"]').click();
-  assert.match(window.location.hash, /platform\/SNES/);
   await settle("SNES");
+  assert.equal(window.location.hash, bootHash);
   await new Promise((resolve) => setTimeout(resolve, 80));
   assert.equal(errors.length, 0, errors.join("\n"));
 });

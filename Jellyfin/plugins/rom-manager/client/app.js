@@ -22,7 +22,6 @@
     coverBusy: false,
     observer: null
   };
-  var suppressHash = false;
 
   var NAV = [
     ["home", "Home", "M3 11l9-7 9 7v9a2 2 0 0 1-2 2h-4v-6H9v6H5a2 2 0 0 1-2-2z"],
@@ -62,7 +61,26 @@
     if (!window.MoFinHost || typeof window.MoFinHost.call !== "function") {
       return Promise.reject(new Error("Open ROM Manager inside MoFin."));
     }
-    return window.MoFinHost.call(method, params || {});
+    var pending = window.MoFinHost.call(method, params || {});
+    return new Promise(function (resolve, reject) {
+      var settled = false;
+      var timer = setTimeout(function () {
+        if (settled) return;
+        settled = true;
+        reject(new Error("MoFin stopped answering. Tap reload to try again."));
+      }, 15000);
+      pending.then(function (result) {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve(result);
+      }, function (error) {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        reject(error);
+      });
+    });
   }
 
   function asObject(value) {
@@ -122,12 +140,6 @@
   function go(route) {
     state.route = route || { name: "home" };
     if (state.route.name !== "game") state.tab = "versions";
-    var hash = fmt.routeHash(state.route);
-    if (location.hash !== hash) {
-      suppressHash = true;
-      location.hash = hash;
-      suppressHash = false;
-    }
     render();
   }
 
@@ -153,6 +165,12 @@
     main.replaceChildren();
     if (note) main.appendChild(note);
     return main;
+  }
+
+  function showPageError(main, token, message) {
+    if (token !== state.token) return;
+    clearMain(main);
+    main.appendChild(el("div", { class: "banner", text: message || "Could not load the library." }));
   }
 
   function cardEl(item) {
@@ -201,9 +219,10 @@
   }
 
   async function renderHome(main) {
+    clearMain(main);
     main.appendChild(el("div", { class: "page-head" }, [el("h1", { text: "Home" })]));
     main.appendChild(el("p", { class: "muted", text: "Loading rows…" }));
-    var token = ++state.token;
+    var token = state.token;
     try {
       var jobs = [api("games", { sort: "added", offset: 0, limit: 18 })];
       jobs.push(state.recent.length ? api("games", { keys: state.recent, limit: 30 }) : Promise.resolve({ items: [] }));
@@ -218,8 +237,7 @@
       main.appendChild(row("Favorites", (results[2] && results[2].items) || [], "Star a game to keep it here."));
       watchCovers(main);
     } catch (error) {
-      if (token !== state.token) return;
-      main.replaceChildren(el("div", { class: "banner", text: error.message || "Could not load the library." }));
+      showPageError(main, token, error.message || "Could not load the library.");
     }
   }
 
@@ -237,30 +255,32 @@
   }
 
   async function renderKeyed(main, title, keys, empty) {
+    clearMain(main);
     if (!keys.length) {
       paintList(main, title, [], empty);
       return;
     }
+    main.appendChild(el("div", { class: "page-head" }, [el("h1", { text: title })]));
     main.appendChild(el("p", { class: "muted", text: "Loading…" }));
-    var token = ++state.token;
+    var token = state.token;
     try {
       var result = await api("games", { keys: keys, limit: 60 });
       if (token !== state.token) return;
       state.indexing = !!result.indexing;
       paintList(main, title, result.items || [], empty);
     } catch (error) {
-      if (token !== state.token) return;
-      main.replaceChildren(el("div", { class: "banner", text: error.message }));
+      showPageError(main, token, error.message);
     }
   }
 
   async function renderLibrary(main) {
     var system = state.route.system || "";
+    clearMain(main);
     main.appendChild(el("div", { class: "page-head" }, [
       el("h1", { text: system || "Library" }),
       el("span", { class: "tiny", text: "Loading…" })
     ]));
-    var token = ++state.token;
+    var token = state.token;
     try {
       var result = await api("games", {
         system: system,
@@ -275,8 +295,7 @@
       state.indexing = !!result.indexing;
       drawLibrary(main);
     } catch (error) {
-      if (token !== state.token) return;
-      main.replaceChildren(el("div", { class: "banner", text: error.message }));
+      showPageError(main, token, error.message);
     }
   }
 
@@ -355,7 +374,7 @@
   }
 
   function renderCollections(main) {
-    main.replaceChildren();
+    clearMain(main);
     var head = el("div", { class: "page-head" });
     head.appendChild(el("h1", { text: "Collections" }));
     head.appendChild(el("button", { type: "button", class: "primary", "data-nav": "1", "data-new-collection": "1", text: "New collection" }));
@@ -375,7 +394,7 @@
   }
 
   function renderMore(main) {
-    main.replaceChildren();
+    clearMain(main);
     main.appendChild(el("div", { class: "page-head" }, [el("h1", { text: "More" })]));
     var stack = el("div", { class: "stack" });
     [["recent", "Recently Viewed"], ["collections", "Collections"], ["settings", "Settings"]].forEach(function (pair) {
@@ -420,8 +439,9 @@
 
   async function renderGame(main) {
     var key = state.route.key;
+    clearMain(main);
     main.appendChild(el("p", { class: "muted", text: "Loading…" }));
-    var token = ++state.token;
+    var token = state.token;
     try {
       var result = await api("game", { key: key });
       if (token !== state.token) return;
@@ -430,8 +450,7 @@
       remember(key);
       drawGame(main, result.game);
     } catch (error) {
-      if (token !== state.token) return;
-      main.replaceChildren(el("div", { class: "banner", text: error.message || "Game not found" }));
+      showPageError(main, token, error.message || "Game not found");
     }
   }
 
@@ -552,14 +571,18 @@
   }
 
   async function renderDuplicates(main) {
+    clearMain(main);
     if (!state.isAdmin) {
-      main.replaceChildren(el("div", { class: "banner", text: "admin only" }));
+      main.appendChild(el("div", { class: "banner", text: "admin only" }));
       return;
     }
+    main.appendChild(el("div", { class: "page-head" }, [el("h1", { text: "Identical copies" })]));
     main.appendChild(el("p", { class: "muted", text: "Loading copies…" }));
+    var token = state.token;
     try {
       var result = await api("duplicates", { offset: 0, limit: 40 });
-      main.replaceChildren();
+      if (token !== state.token) return;
+      clearMain(main);
       main.appendChild(el("div", { class: "page-head" }, [el("h1", { text: "Identical copies" })]));
       main.appendChild(el("p", { class: "tiny", text: (result.total || 0) + " identical groups · " + (result.versionGroups || 0) + " version groups. Nothing is selected. Best Experience is only a label." }));
       (result.groups || []).forEach(function (group) {
@@ -583,18 +606,23 @@
       if (!(result.groups || []).length) main.appendChild(el("div", { class: "empty", text: "No identical copies." }));
       main.appendChild(el("button", { type: "button", class: "danger", "data-nav": "1", "data-trash-selected": "1", text: "Move selected to trash" }));
     } catch (error) {
-      main.replaceChildren(el("div", { class: "banner", text: error.message }));
+      showPageError(main, token, error.message);
     }
   }
 
   async function renderTrash(main) {
+    clearMain(main);
     if (!state.isAdmin) {
-      main.replaceChildren(el("div", { class: "banner", text: "admin only" }));
+      main.appendChild(el("div", { class: "banner", text: "admin only" }));
       return;
     }
+    main.appendChild(el("div", { class: "page-head" }, [el("h1", { text: "Trash" })]));
+    main.appendChild(el("p", { class: "muted", text: "Loading…" }));
+    var token = state.token;
     try {
       var result = await api("trash-list", {});
-      main.replaceChildren();
+      if (token !== state.token) return;
+      clearMain(main);
       main.appendChild(el("div", { class: "page-head" }, [el("h1", { text: "Trash" })]));
       main.appendChild(el("p", { class: "tiny", text: fmt.formatBytes(result.bytes || 0) + " in trash. Restore puts a ROM back. Nothing here deletes it." }));
       if (!(result.items || []).length) {
@@ -618,11 +646,17 @@
         main.appendChild(card);
       });
     } catch (error) {
-      main.replaceChildren(el("div", { class: "banner", text: error.message }));
+      showPageError(main, token, error.message);
     }
   }
 
   function render() {
+    state.token++;
+    state.coverQueue = [];
+    if (state.observer) {
+      state.observer.disconnect();
+      state.observer = null;
+    }
     updateNav();
     var main = document.getElementById("main");
     var name = state.route.name;
@@ -674,6 +708,7 @@
     if (state.coverBusy) return;
     var batch = state.coverQueue.splice(0, 4);
     if (!batch.length) return;
+    var token = state.token;
     state.coverBusy = true;
     try {
       var items = [];
@@ -684,8 +719,8 @@
       });
       if (items.length) {
         var result = await api("covers", { items: items });
-        var covers = (result && result.covers) || {};
-        applyCover(covers);
+        if (token !== state.token) return;
+        applyCover((result && result.covers) || {});
       }
     } catch (e) {
       /* A missing cover stays on the platform placeholder. */
@@ -874,7 +909,6 @@
       return;
     }
     showToast("Moved to trash");
-    state.token++;
     go(state.route.name === "game" ? { name: "library", system: state.route.system } : state.route);
     loadSystems();
   }
@@ -1150,12 +1184,6 @@
     if (!map[event.key] || typing) return;
     event.preventDefault();
     moveFocus(map[event.key]);
-  });
-
-  window.addEventListener("hashchange", function () {
-    if (suppressHash) return;
-    state.route = fmt.parseRoute(location.hash);
-    render();
   });
 
   function buildNav() {
