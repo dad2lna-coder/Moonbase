@@ -1,7 +1,9 @@
 using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using Moonfin.Server.Models;
 using Moonfin.Server.Plugins;
+using Moonfin.Server.Services;
 
 namespace Moonfin.Plugins.RomManager;
 
@@ -26,7 +28,7 @@ public sealed class RomManagerModule : IMoonbaseModule
 
     public string Id => "rom-manager";
 
-    public string Version => "0.1.0";
+    public string Version => "0.2.0";
 
     public IReadOnlyCollection<string> Provides { get; } = Array.Empty<string>();
 
@@ -54,6 +56,7 @@ public sealed class RomManagerModule : IMoonbaseModule
         routes.MapPost("systems", Systems);
         routes.MapPost("games", Games);
         routes.MapPost("game", Game);
+        routes.MapPost("launch", Launch);
         routes.MapPost("covers", Covers);
         routes.MapPost("duplicates", Duplicates);
         routes.MapPost("rescan", Rescan);
@@ -68,6 +71,8 @@ public sealed class RomManagerModule : IMoonbaseModule
     public Task<PluginRouteResult> Games(PluginRouteRequest request) => Guard(request, () => GamesCore(request));
 
     public Task<PluginRouteResult> Game(PluginRouteRequest request) => Guard(request, () => GameCore(request));
+
+    public Task<PluginRouteResult> Launch(PluginRouteRequest request) => Guard(request, () => LaunchCore(request));
 
     public Task<PluginRouteResult> Covers(PluginRouteRequest request) => Guard(request, () => CoversCore(request));
 
@@ -197,6 +202,311 @@ public sealed class RomManagerModule : IMoonbaseModule
                 related = related.Select(Card),
             },
         });
+    }
+
+    private async Task<PluginRouteResult> LaunchCore(PluginRouteRequest request)
+    {
+        var body = Body(request);
+        var key = Str(body, "key");
+        var path = Str(body, "p");
+        if (string.IsNullOrWhiteSpace(key))
+        {
+            return Fail("unknown key");
+        }
+
+        if (!RomPaths.TryValidate(path, out var trash) || string.IsNullOrEmpty(path))
+        {
+            return Fail("invalid path");
+        }
+
+        if (trash)
+        {
+            return Fail("trash path");
+        }
+
+        var snapshot = await _channel.GetIndexAsync(request.Services, request.CancellationToken).ConfigureAwait(false);
+        if (!snapshot.ByKey.TryGetValue(key, out var game))
+        {
+            return Fail("unknown key");
+        }
+
+        RomEntry? member = null;
+        foreach (var candidate in game.Members)
+        {
+            if (string.Equals(candidate.Path, path, StringComparison.Ordinal))
+            {
+                member = candidate;
+                break;
+            }
+        }
+
+        if (member == null)
+        {
+            return Fail("not a member");
+        }
+
+        var fileName = RomTags.FileName(member.RomFile, member.Path);
+        if (string.IsNullOrEmpty(fileName)
+            || fileName.Contains('/')
+            || fileName.Contains('\\')
+            || fileName.Contains("..", StringComparison.Ordinal))
+        {
+            return Fail("invalid path");
+        }
+
+        var romRoot = RomRoot(request.Services);
+        var absolute = Path.Combine(romRoot, path.Replace('/', Path.DirectorySeparatorChar), fileName);
+        if (!IsContained(romRoot, absolute))
+        {
+            return Fail("invalid path");
+        }
+
+        var games = request.Services?.GetService(typeof(GamesService)) as GamesService;
+        var located = games?.LocateRomFile(absolute);
+        var title = game.Title;
+        var system = located == null || string.IsNullOrWhiteSpace(located.SystemName) ? game.Platform : located.SystemName;
+        var core = located?.Core;
+        if (IsPsp(system, core))
+        {
+            return LaunchAnswer(located, title, system, false, "PSP is too heavy for iPhone");
+        }
+
+        if (IsUnemulated(system))
+        {
+            return LaunchAnswer(located, title, system, false, "No emulator for this system yet");
+        }
+
+        if (located == null)
+        {
+            return LaunchAnswer(null, title, game.Platform, false, "No game library covers this ROM.");
+        }
+
+        if (NeedsBios(located.Core, located.FileName, system) && !HasBios(romRoot, path.Split('/')[0]))
+        {
+            return LaunchAnswer(located, title, system, false, "BIOS is missing for this system.");
+        }
+
+        return LaunchAnswer(located, title, system, true, null);
+    }
+
+    private static PluginRouteResult LaunchAnswer(GameLaunchTarget? target, string title, string system, bool playable, string? reason)
+    {
+        return PluginRouteResult.Json(new
+        {
+            ok = true,
+            libraryId = target?.LibraryId,
+            gameId = target?.GameId,
+            core = target?.Core,
+            fileName = target?.FileName,
+            title,
+            system,
+            playable,
+            reason,
+        });
+    }
+
+    private const string DefaultRomRoot = "/data/media/roms";
+
+    private static string RomRoot(IServiceProvider? services)
+    {
+        var configured = ReadRomRoot(services);
+        if (string.IsNullOrWhiteSpace(configured) || configured.Contains("..", StringComparison.Ordinal))
+        {
+            return DefaultRomRoot;
+        }
+
+        try
+        {
+            return Path.GetFullPath(configured);
+        }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            return DefaultRomRoot;
+        }
+    }
+
+    private static string? ReadRomRoot(IServiceProvider? services)
+    {
+        if (services?.GetService(typeof(MoonfinPluginRegistry)) is not MoonfinPluginRegistry registry)
+        {
+            return null;
+        }
+
+        string? json;
+        try
+        {
+            json = registry.ReadConfig("rom-manager");
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException)
+        {
+            return null;
+        }
+
+        if (string.IsNullOrWhiteSpace(json))
+        {
+            return null;
+        }
+
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            if (doc.RootElement.ValueKind != JsonValueKind.Object)
+            {
+                return null;
+            }
+
+            if (doc.RootElement.TryGetProperty("settings", out var settings)
+                && settings.ValueKind == JsonValueKind.Object
+                && settings.TryGetProperty("romRoot", out var nested)
+                && nested.ValueKind == JsonValueKind.String)
+            {
+                return nested.GetString();
+            }
+
+            if (doc.RootElement.TryGetProperty("romRoot", out var top) && top.ValueKind == JsonValueKind.String)
+            {
+                return top.GetString();
+            }
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+
+        return null;
+    }
+
+    private static bool IsContained(string root, string path)
+    {
+        try
+        {
+            var full = Path.GetFullPath(path);
+            var rootFull = Path.GetFullPath(root);
+            var prefix = rootFull.TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
+            var comparison = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+            return full.StartsWith(prefix, comparison);
+        }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            return false;
+        }
+    }
+
+    private static string Fold(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return string.Empty;
+        }
+
+        var builder = new System.Text.StringBuilder(value.Length);
+        foreach (var character in value)
+        {
+            if (char.IsLetterOrDigit(character))
+            {
+                builder.Append(char.ToLowerInvariant(character));
+            }
+        }
+
+        return builder.ToString();
+    }
+
+    private static bool IsPsp(string? system, string? core)
+    {
+        if (string.Equals(core, "psp", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        var name = Fold(system);
+        return name is "psp" or "playstationportable";
+    }
+
+    private static bool IsUnemulated(string? system)
+    {
+        var name = Fold(system);
+        if (name.Length == 0)
+        {
+            return false;
+        }
+
+        if (name.Contains("coleco", StringComparison.Ordinal) || name.Contains("channelf", StringComparison.Ordinal))
+        {
+            return true;
+        }
+
+        return name is "msx" or "msx2" or "msx2plus" || name.StartsWith("msx", StringComparison.Ordinal);
+    }
+
+    private static bool NeedsBios(string? core, string? fileName, string? system)
+    {
+        var name = Fold(system);
+        if ((fileName ?? string.Empty).EndsWith(".fds", StringComparison.OrdinalIgnoreCase)
+            || name is "fds" or "famicomdisksystem")
+        {
+            return true;
+        }
+
+        return core is "psx" or "segaCD" or "segaSaturn" or "pcfx" or "3do" or "amiga";
+    }
+
+    private static bool HasBios(string romRoot, string systemFolder)
+    {
+        if (string.IsNullOrWhiteSpace(systemFolder) || systemFolder.Contains("..", StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        if (DirectoryHasFile(Path.Combine(romRoot, ".bios", systemFolder)))
+        {
+            return true;
+        }
+
+        return HasBiosFile(Path.Combine(romRoot, systemFolder));
+    }
+
+    private static bool DirectoryHasFile(string directory)
+    {
+        try
+        {
+            return Directory.Exists(directory) && Directory.EnumerateFiles(directory).Any();
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return false;
+        }
+    }
+
+    private static bool HasBiosFile(string directory)
+    {
+        try
+        {
+            if (!Directory.Exists(directory))
+            {
+                return false;
+            }
+
+            foreach (var file in Directory.EnumerateFiles(directory))
+            {
+                var ext = Path.GetExtension(file);
+                if (ext.Equals(".bin", StringComparison.OrdinalIgnoreCase)
+                    || ext.Equals(".bios", StringComparison.OrdinalIgnoreCase)
+                    || ext.Equals(".rom", StringComparison.OrdinalIgnoreCase)
+                    || ext.Equals(".img", StringComparison.OrdinalIgnoreCase)
+                    || ext.Equals(".sys", StringComparison.OrdinalIgnoreCase)
+                    || ext.Equals(".bs", StringComparison.OrdinalIgnoreCase)
+                    || ext.Equals(".zip", StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return false;
+        }
+
+        return false;
     }
 
     private async Task<PluginRouteResult> CoversCore(PluginRouteRequest request)

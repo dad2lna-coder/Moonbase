@@ -297,6 +297,25 @@ public class GameBios
     public long SizeBytes { get; set; }
 }
 
+/// <summary>Where a ROM on disk should be handed to the EmulatorJS player.</summary>
+public sealed class GameLaunchTarget
+{
+    [JsonPropertyName("libraryId")]
+    public string LibraryId { get; set; } = string.Empty;
+
+    [JsonPropertyName("gameId")]
+    public string GameId { get; set; } = string.Empty;
+
+    [JsonPropertyName("systemName")]
+    public string SystemName { get; set; } = string.Empty;
+
+    [JsonPropertyName("core")]
+    public string Core { get; set; } = string.Empty;
+
+    [JsonPropertyName("fileName")]
+    public string FileName { get; set; } = string.Empty;
+}
+
 public class RommTestResult
 {
     [JsonPropertyName("ok")]

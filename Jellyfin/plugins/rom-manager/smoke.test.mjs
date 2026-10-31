@@ -44,11 +44,21 @@ const game = {
     sizeBytes: 1050,
     best: true,
     cover: 1
+  }, {
+    p: "SNES/Unplayable",
+    file: "Unplayable (USA).col",
+    ext: "col",
+    region: "USA",
+    sizeBytes: 100,
+    best: false,
+    cover: 1
   }],
   related: []
 };
 
+const calls = [];
 function call(method, params) {
+  calls.push({ method, params });
   const data = (params && params.data) || {};
   if (method === "callPluginRoute") {
     if (params.path === "systems") {
@@ -92,6 +102,21 @@ function call(method, params) {
       return Promise.resolve({ ok: true, covers });
     }
     if (params.path === "deps") return Promise.resolve({ ok: true, warnings: [] });
+    if (params.path === "launch") {
+      if (data.p === "SNES/Unplayable") {
+        return Promise.resolve({ ok: true, playable: false, reason: "No emulator for this system yet" });
+      }
+      return Promise.resolve({
+        ok: true,
+        playable: true,
+        libraryId: "lib-1",
+        gameId: "game-1",
+        core: "snes",
+        fileName: "Chrono Trigger (USA).sfc",
+        title: "Chrono Trigger",
+        system: "SNES"
+      });
+    }
     if (params.path === "trash" || params.path === "restore" || params.path === "rescan") return Promise.resolve({ ok: true });
     return Promise.resolve({ ok: true, ignored: data });
   }
@@ -115,6 +140,7 @@ test("every page renders, and restore or a duplicate tick does not leave the pag
     runScripts: "dangerously"
   });
   const window = dom.window;
+  try {
   window.addEventListener("error", (event) => {
     errors.push(String((event.error && event.error.stack) || event.message));
   });
@@ -170,8 +196,13 @@ test("every page renders, and restore or a duplicate tick does not leave the pag
 
   await settle("Home");
   assert.equal(document.querySelectorAll("#main .page-head").length, 1);
-  assert.match(document.getElementById("main").textContent, /Recently Viewed/);
+  assert.match(document.getElementById("main").textContent, /Recently Played/);
+  assert.match(document.getElementById("main").textContent, /Favorites/);
   assert.match(document.getElementById("main").textContent, /Chrono Trigger/);
+  assert.match(document.getElementById("side-nav").textContent, /Recently Played/);
+  assert.equal(document.getElementById("total-games").textContent, "1");
+  assert.match(document.getElementById("clock").textContent, /^\d{2}:\d{2}$/);
+  assert.ok(document.querySelector(".art .plat svg"));
   await assertPlaceholder(".art");
   const bootHash = window.location.hash;
 
@@ -206,17 +237,55 @@ test("every page renders, and restore or a duplicate tick does not leave the pag
   await assertPlaceholder(".version-banner");
   assert.equal(document.querySelector("[data-trash-best]"), null);
   assert.equal(document.querySelector("[data-trash]"), null);
-  assert.equal(Array.from(document.querySelectorAll("#main button")).some((button) => button.textContent === "More"), false);
+  assert.equal(Array.from(document.querySelectorAll("#main button")).some((button) => button.textContent === "More"), true);
+  for (const tab of ["screenshots", "videos", "achievements"]) {
+    document.querySelector(`#main [data-tab="${tab}"]`).click();
+    assert.match(document.getElementById("main").textContent, /Coming later/);
+  }
+  document.querySelector('#main [data-tab="versions"]').click();
+  assert.match(document.getElementById("main").textContent, /Available Versions \(2\)/);
 
-  for (const [name, title] of [["favorites", "Favorites"], ["recent", "Recently Viewed"], ["collections", "Collections"], ["settings", "Settings"]]) {
+  async function until(check, label) {
+    for (let i = 0; i < 40; i++) {
+      if (check()) return;
+      await new Promise((resolve) => setTimeout(resolve, 15));
+    }
+    throw new Error(label + "\n" + errors.join("\n"));
+  }
+
+  const unplayable = document.querySelector('#main [data-play="1"]');
+  assert.ok(unplayable);
+  unplayable.click();
+  assert.equal(unplayable.getAttribute("aria-busy"), "true");
+  assert.equal(unplayable.textContent, "Starting…");
+  await until(() => document.getElementById("toast").textContent.includes("No emulator for this system yet"), "unplayable toast");
+  assert.equal(unplayable.textContent, "No emulator for this system yet");
+  assert.equal(calls.filter((entry) => entry.method === "playGame").length, 0);
+
+  const hero = document.querySelector('#main [data-play="hero"]');
+  assert.ok(hero);
+  hero.click();
+  assert.equal(hero.getAttribute("aria-busy"), "true");
+  assert.equal(hero.textContent, "Starting…");
+  await until(() => calls.some((entry) => entry.method === "playGame"), "play handoff");
+  const plays = calls.filter((entry) => entry.method === "playGame");
+  assert.equal(plays.length, 1);
+  assert.equal(plays[0].params.libraryId, "lib-1");
+  assert.equal(plays[0].params.gameId, "game-1");
+  assert.equal(plays[0].params.title, "Chrono Trigger");
+  const remembered = calls.findIndex((entry) => entry.method === "dataPut" && entry.params && entry.params.key === "recent");
+  const played = calls.findIndex((entry) => entry.method === "playGame");
+  assert.ok(remembered >= 0 && remembered < played);
+
+  for (const [name, title] of [["favorites", "Favorites"], ["recent", "Recently Played"], ["collections", "Collections"], ["settings", "Settings"]]) {
     clickGo(name);
     const text = await settle(title);
     assert.equal(/not defined/i.test(text), false, text);
     assert.equal(window.location.hash, bootHash);
   }
 
-  clickGo("more");
-  await settle("More");
+  clickGo("settings");
+  await settle("Settings");
   document.querySelector('#main [data-go="duplicates"]').click();
   await settle("Identical copies");
   const box = document.querySelector("[data-dup]");
@@ -226,8 +295,8 @@ test("every page renders, and restore or a duplicate tick does not leave the pag
   assert.equal(heading(), "Identical copies");
   assert.equal(window.location.hash, bootHash);
 
-  clickGo("more");
-  await settle("More");
+  clickGo("settings");
+  await settle("Settings");
   document.querySelector('#main [data-go="trash"]').click();
   await settle("Trash");
   const restore = Array.from(document.querySelectorAll("button")).find((button) => button.textContent === "Restore");
@@ -276,4 +345,7 @@ test("every page renders, and restore or a duplicate tick does not leave the pag
   assert.equal(window.location.hash, bootHash);
   await new Promise((resolve) => setTimeout(resolve, 80));
   assert.equal(errors.length, 0, errors.join("\n"));
+  } finally {
+    window.close();
+  }
 });

@@ -53,6 +53,13 @@ internal static class GameSystemCoreResolver
             [".pbp"] = "psx",
             [".cso"] = "psp",
             [".iso"] = "psp",
+            // EmulatorJS 4.2.3 data/cores/cores.json names the installed Fuse core "fuse".
+            [".tzx"] = "fuse",
+            [".tap"] = "fuse",
+            [".z80"] = "fuse",
+            [".rzx"] = "fuse",
+            [".scl"] = "fuse",
+            [".trd"] = "fuse",
         };
 
     private static readonly IReadOnlyDictionary<string, string> SystemNameToCore =
@@ -94,6 +101,7 @@ internal static class GameSystemCoreResolver
             ["playstation"] = "psx",
             ["psp"] = "psp",
             ["playstationportable"] = "psp",
+            ["zxspectrum"] = "fuse",
             ["mame"] = "mame",
             ["arcade"] = "arcade",
         };

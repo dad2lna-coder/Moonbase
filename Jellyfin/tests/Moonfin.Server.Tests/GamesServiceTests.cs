@@ -17,6 +17,53 @@ public class GamesServiceTests : IDisposable
     // could fail for any of four unrelated reasons.
 
     [Fact]
+    public void LocateRomFile_RejectsOutsideRootTraversalAndMissingFiles()
+    {
+        var libraryRoot = Path.Combine(_root, "Retro Games");
+        var gameDir = Path.Combine(libraryRoot, "SNES", "Chrono");
+        Directory.CreateDirectory(gameDir);
+        var rom = Path.Combine(gameDir, "Chrono Trigger (USA).sfc");
+        File.WriteAllBytes(rom, [1, 2, 3]);
+        var outside = Path.Combine(_root, "outside.sfc");
+        File.WriteAllBytes(outside, [9]);
+        var escaped = Path.GetFullPath(Path.Combine(libraryRoot, "..", "outside.sfc"));
+        var spectrumDir = Path.Combine(libraryRoot, "ZX Spectrum", "Manic");
+        Directory.CreateDirectory(spectrumDir);
+        var spectrum = Path.Combine(spectrumDir, "Manic Miner.z80");
+        File.WriteAllBytes(spectrum, [4]);
+        var service = new GamesService(new FakeLibraryManager(
+        [
+            new VirtualFolderInfo
+            {
+                Name = "Retro Games",
+                ItemId = "lib-1",
+                Locations = [libraryRoot],
+            },
+        ]));
+
+        Assert.Null(service.LocateRomFile(outside));
+        Assert.Null(service.LocateRomFile(escaped));
+        Assert.Null(service.LocateRomFile(Path.Combine(gameDir, "missing.sfc")));
+
+        var hit = service.LocateRomFile(rom);
+        Assert.NotNull(hit);
+        Assert.Equal("lib-1", hit!.LibraryId);
+        Assert.Equal(GamePathResolver.EncodeToken(Path.GetFullPath(rom)), hit.GameId);
+        Assert.Equal("SNES", hit.SystemName);
+        Assert.Equal("snes", hit.Core);
+        Assert.Equal("Chrono Trigger (USA).sfc", hit.FileName);
+
+        var fuse = service.LocateRomFile(spectrum);
+        Assert.NotNull(fuse);
+        Assert.Equal("fuse", fuse!.Core);
+        Assert.Equal("ZX Spectrum", fuse.SystemName);
+        Assert.Equal("nes", GamesService.ResolveSystemCore("ColecoVision", Array.Empty<string>()));
+        Assert.Equal("nes", GamesService.ResolveSystemCore("MSX", Array.Empty<string>()));
+        Assert.Equal("nes", GamesService.ResolveSystemCore("Channel F", Array.Empty<string>()));
+        Assert.NotEqual("fuse", GamesService.ResolveSystemCore("ColecoVision", Array.Empty<string>()));
+    }
+
+    [Fact]
     public void GameArtworkCapabilities_SerializesFlagsUnderTheirCamelCaseWireNames()
     {
         var capabilities = new GameArtworkCapabilities

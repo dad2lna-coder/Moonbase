@@ -1233,3 +1233,39 @@ public class PluginEventTests
         }
     }
 }
+
+public class GamesSlotTests
+{
+    [Fact]
+    public void GamesSlotSurvivesNormalisationAndShowsInThePluginList()
+    {
+        var manifest = PluginManifest.TryParse(
+            """{"id":"rom-manager","name":"ROM Manager","version":"0.2.0","description":"","provides":[],"slots":["games","not-a-slot"],"minHostApi":1}""",
+            out var error);
+        Assert.Null(error);
+        Assert.NotNull(manifest);
+        Assert.Equal(new[] { "games" }, manifest!.Slots);
+
+        var root = Directory.CreateDirectory(Path.Combine(Path.GetTempPath(), "moonfin-games-slot-" + Guid.NewGuid().ToString("N")));
+        try
+        {
+            var folder = Directory.CreateDirectory(Path.Combine(root.FullName, "rom-manager"));
+            File.WriteAllText(
+                Path.Combine(folder.FullName, "plugin.json"),
+                """{"id":"rom-manager","name":"ROM Manager","version":"0.2.0","description":"Browse ROMs","provides":[],"slots":["games","bogus"],"minHostApi":1}""");
+            var catalog = new MoonbaseModuleCatalog();
+            var registry = new MoonfinPluginRegistry(catalog, root.FullName);
+            var status = Assert.Single(registry.List());
+            Assert.Equal(new[] { "games" }, status.Manifest.Slots);
+
+            var action = new MoonfinPluginsController(registry, catalog).List();
+            var ok = Assert.IsType<Microsoft.AspNetCore.Mvc.OkObjectResult>(action.Result);
+            var list = Assert.IsType<PluginListResponse>(ok.Value);
+            Assert.Equal(new[] { "games" }, Assert.Single(list.Plugins).Slots);
+        }
+        finally
+        {
+            Directory.Delete(root.FullName, recursive: true);
+        }
+    }
+}

@@ -1015,6 +1015,82 @@ public class GamesService
     }
 
     /// <summary>
+    /// Locates a ROM file that already lives inside a game library. Returns null unless the path
+    /// is inside a library root, exists, and is a playable ROM. Arcade ZIPs use the cached or
+    /// freshly resolved recommended core when one is available.
+    /// </summary>
+    public GameLaunchTarget? LocateRomFile(string absolutePath)
+    {
+        if (string.IsNullOrWhiteSpace(absolutePath))
+        {
+            return null;
+        }
+
+        string full;
+        try
+        {
+            full = Path.GetFullPath(absolutePath);
+        }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            return null;
+        }
+
+        if (!File.Exists(full) || !IsRomFile(full))
+        {
+            return null;
+        }
+
+        GameLibrary? match = null;
+        foreach (var library in GetGameLibraries())
+        {
+            if (library.Locations.Any(root => GamePathResolver.IsWithinRoot(root, full)))
+            {
+                match = library;
+                break;
+            }
+        }
+
+        if (match == null)
+        {
+            return null;
+        }
+
+        var resolved = _paths.ResolveAbsoluteGameFile(match.Id, full, requireExisting: true);
+        if (resolved == null)
+        {
+            return null;
+        }
+
+        return new GameLaunchTarget
+        {
+            LibraryId = match.Id,
+            GameId = GamePathResolver.EncodeToken(full),
+            SystemName = resolved.SystemName,
+            Core = EffectiveLaunchCore(resolved.SystemName, full),
+            FileName = Path.GetFileName(full),
+        };
+    }
+
+    private string EffectiveLaunchCore(string systemName, string romPath)
+    {
+        var systemCore = ResolveSystemCore(systemName, new List<string> { romPath });
+        if (!IsArcadeFamilyCore(systemCore))
+        {
+            return systemCore;
+        }
+
+        var cached = TryGetCachedArcadeCompatibility(romPath, systemCore);
+        if (!string.IsNullOrEmpty(cached?.RecommendedCore))
+        {
+            return cached.RecommendedCore;
+        }
+
+        var resolved = ResolveArcadeCompatibilityAsync(romPath, systemCore).GetAwaiter().GetResult();
+        return string.IsNullOrEmpty(resolved?.RecommendedCore) ? systemCore : resolved.RecommendedCore;
+    }
+
+    /// <summary>
     /// Resolves an opaque ROM/BIOS token to an absolute on-disk path, validating it lives
     /// inside the given library and has an allowed extension. Returns null on any mismatch.
     /// </summary>

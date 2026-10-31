@@ -27,18 +27,44 @@
     ["home", "Home", "M3 11l9-7 9 7v9a2 2 0 0 1-2 2h-4v-6H9v6H5a2 2 0 0 1-2-2z"],
     ["library", "Library", "M4 5h7v14H4zM13 5h7v14h-7z"],
     ["favorites", "Favorites", "M12 20s-7-4.4-7-9a4 4 0 0 1 7-2 4 4 0 0 1 7 2c0 4.6-7 9-7 9z"],
-    ["recent", "Recently Viewed", "M12 7v6l4 2M12 21a9 9 0 1 0-9-9"],
+    ["recent", "Recently Played", "M12 7v6l4 2M12 21a9 9 0 1 0-9-9"],
     ["collections", "Collections", "M4 7h16v12H4zM8 7V5h8v2"],
     ["platforms", "Platforms", "M4 8h16v10H4zM8 8V6h8v2"],
     ["settings", "Settings", "M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8z"]
   ];
-  var TABS = [
-    ["home", "Home", NAV[0][2]],
-    ["library", "Library", NAV[1][2]],
-    ["favorites", "Favorites", NAV[2][2]],
-    ["platforms", "Platforms", NAV[5][2]],
-    ["more", "More", "M6 12h.01M12 12h.01M18 12h.01"]
-  ];
+
+  var PLATFORM_ICONS = {
+    nes: "M4 8h16v8H4zM8 16v2M16 16v2M9 11h2v2H9zm4 0h2v2h-2z",
+    snes: "M3 9h18v7H3zM7 16v2h2v-2M15 16v2h2v-2M8 12h8",
+    genesis: "M5 7h14v10H5zM8 10h3v4H8zm5 0h3v4h-3z",
+    gb: "M7 3h10v18H7zM9 6h6v6H9zM10 16h1M13 16h1",
+    gba: "M2 9h20v6H2zM6 11h4v2H6zM16 12h.01",
+    n64: "M4 8h10v8H4zM14 10h6v4h-6z",
+    psx: "M6 5h12v14H6zM9 9h6v6H9z",
+    psp: "M3 7h18v10H3zM7 10h6v4H7z",
+    arcade: "M4 4h16v12H4zM8 20h8M9 16v4M15 16v4"
+  };
+  var GENERIC_ICON = "M7 6h10a3 3 0 0 1 3 3v2a2 2 0 0 1-2 2h-1v2H7v-2H6a2 2 0 0 1-2-2V9a3 3 0 0 1 3-3zM8 8h2M14 8h2";
+
+  function platformIcon(system) {
+    var key = String(system || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+    var aliases = {
+      supernintendo: "snes",
+      superfamicom: "snes",
+      famicom: "nes",
+      megadrive: "genesis",
+      segagenesis: "genesis",
+      playstation: "psx",
+      nintendo64: "n64",
+      gameboy: "gb",
+      gameboycolor: "gb",
+      gameboyadvance: "gba",
+      mame: "arcade"
+    };
+    var icon = el("span", { class: "plat", "aria-hidden": "true" });
+    icon.appendChild(svg(PLATFORM_ICONS[aliases[key] || key] || GENERIC_ICON));
+    return icon;
+  }
 
   function el(tag, attrs, kids) {
     var node = document.createElement(tag);
@@ -99,10 +125,45 @@
     hostCall("showToast", { message: message }).catch(function () {});
   }
 
-  function playGame(game, version) {
-    void game;
-    void version;
-    showToast("Playing from ROM Manager is coming soon");
+  function playGame(game, version, button) {
+    if (!game || !version || !version.p) {
+      showToast("This version cannot be played.");
+      return;
+    }
+    var label = button ? button.textContent : "Play";
+    if (button) {
+      button.disabled = true;
+      button.setAttribute("aria-busy", "true");
+      button.textContent = "Starting…";
+    }
+    api("launch", { key: game.key, p: version.p }).then(function (result) {
+      if (!result || result.playable !== true) {
+        var why = (result && result.reason) || "This version cannot be played.";
+        showToast(why);
+        if (button) {
+          button.textContent = why;
+          button.classList.remove("primary");
+          button.classList.add("text-btn");
+        }
+        return;
+      }
+      remember(game.key);
+      return hostCall("playGame", {
+        libraryId: result.libraryId,
+        gameId: result.gameId,
+        title: result.title || game.title || ""
+      }).then(function () {
+        if (button) button.textContent = label;
+      });
+    }).catch(function (error) {
+      showToast(error.message || "Could not start the game.");
+      if (button) button.textContent = label;
+    }).then(function () {
+      if (button) {
+        button.disabled = false;
+        button.removeAttribute("aria-busy");
+      }
+    });
   }
 
   async function apiRaw(path, data) {
@@ -145,10 +206,7 @@
 
   function updateNav() {
     var name = state.route.name === "collection" ? "collections" : state.route.name;
-    document.getElementById("sidebar").querySelectorAll("[data-go]").forEach(function (button) {
-      button.classList.toggle("active", button.getAttribute("data-go") === name);
-    });
-    document.getElementById("tabbar").querySelectorAll("[data-go]").forEach(function (button) {
+    document.querySelectorAll("#side-nav [data-go], #switcher [data-go]").forEach(function (button) {
       button.classList.toggle("active", button.getAttribute("data-go") === name);
     });
     var total = document.getElementById("total-games");
@@ -186,6 +244,7 @@
     var img = el("img", { alt: "" });
     img.hidden = true;
     art.appendChild(img);
+    art.appendChild(platformIcon(item.system));
     art.appendChild(el("span", { class: "badge", text: item.system || "" }));
     var star = el("button", {
       class: "star" + (isFav(item.key) ? " on" : ""),
@@ -224,21 +283,41 @@
     main.appendChild(el("p", { class: "muted", text: "Loading rows…" }));
     var token = state.token;
     try {
-      var jobs = [api("games", { sort: "added", offset: 0, limit: 18 })];
-      jobs.push(state.recent.length ? api("games", { keys: state.recent, limit: 30 }) : Promise.resolve({ items: [] }));
-      jobs.push(state.favorites.length ? api("games", { keys: state.favorites, limit: 30 }) : Promise.resolve({ items: [] }));
+      var platforms = state.systems.slice(0, 4);
+      var jobs = [
+        state.recent.length ? api("games", { keys: state.recent, limit: 18 }) : Promise.resolve({ items: [] }),
+        state.favorites.length ? api("games", { keys: state.favorites, limit: 18 }) : Promise.resolve({ items: [] })
+      ];
+      platforms.forEach(function (entry) {
+        jobs.push(api("games", { system: entry.system, sort: "title", offset: 0, limit: 12 }));
+      });
       var results = await Promise.all(jobs);
       if (token !== state.token) return;
-      state.indexing = !!(results[0] && results[0].indexing);
+      state.indexing = results.some(function (result) { return result && result.indexing; });
       clearMain(main);
       main.appendChild(el("div", { class: "page-head" }, [el("h1", { text: "Home" })]));
-      main.appendChild(row("Recently Viewed", (results[1] && results[1].items) || [], "Games you open will show up here."));
-      main.appendChild(row("Recently Added", (results[0] && results[0].items) || [], "Nothing has been indexed yet."));
-      main.appendChild(row("Favorites", (results[2] && results[2].items) || [], "Star a game to keep it here."));
+      main.appendChild(row("Recently Played", orderBy((results[0] && results[0].items) || [], state.recent), "Games you play will show up here."));
+      main.appendChild(row("Favorites", orderBy((results[1] && results[1].items) || [], state.favorites), "Star a game to keep it here."));
+      platforms.forEach(function (entry, index) {
+        main.appendChild(row(entry.system, (results[index + 2] && results[index + 2].items) || [], "No games for this platform yet."));
+      });
+      if (!platforms.length) {
+        main.appendChild(el("div", { class: "empty", text: state.indexing ? "Library is being indexed" : "No platforms yet." }));
+      }
       watchCovers(main);
     } catch (error) {
       showPageError(main, token, error.message || "Could not load the library.");
     }
+  }
+
+  function orderBy(items, keys) {
+    var rank = {};
+    (keys || []).forEach(function (key, index) { rank[key] = index; });
+    return (items || []).slice().sort(function (a, b) {
+      var left = rank[a.key] == null ? 99 : rank[a.key];
+      var right = rank[b.key] == null ? 99 : rank[b.key];
+      return left - right;
+    });
   }
 
   function paintList(main, title, items, empty) {
@@ -397,7 +476,7 @@
     clearMain(main);
     main.appendChild(el("div", { class: "page-head" }, [el("h1", { text: "More" })]));
     var stack = el("div", { class: "stack" });
-    [["recent", "Recently Viewed"], ["collections", "Collections"], ["settings", "Settings"]].forEach(function (pair) {
+    [["recent", "Recently Played"], ["collections", "Collections"], ["settings", "Settings"]].forEach(function (pair) {
       stack.appendChild(el("button", { type: "button", class: "text-btn", "data-nav": "1", "data-go": pair[0], text: pair[1] }));
     });
     if (state.isAdmin) {
@@ -447,7 +526,6 @@
       if (token !== state.token) return;
       state.current = result.game;
       state.indexing = !!result.indexing;
-      remember(key);
       drawGame(main, result.game);
     } catch (error) {
       showPageError(main, token, error.message || "Game not found");
@@ -494,17 +572,20 @@
     body.appendChild(thumb);
     var copy = el("div", { class: "hero-copy" });
     copy.appendChild(el("h1", { text: game.title || "Untitled" }));
-    copy.appendChild(el("p", { text: fmt.joinParts([game.system, game.genre, game.year, game.publisher]) }));
+    copy.appendChild(el("p", { text: fmt.joinParts([game.system, game.genre, game.year, game.developer]) }));
     if (game.rating) {
-      var rating = "★ " + game.rating;
-      if (game.ratingCount) rating += " (" + game.ratingCount + ")";
-      copy.appendChild(el("p", { class: "rating", text: rating }));
+      var filled = Math.max(0, Math.min(5, Math.round(Number(game.rating))));
+      var glyphs = "";
+      for (var starIndex = 0; starIndex < 5; starIndex++) glyphs += starIndex < filled ? "★" : "☆";
+      if (game.ratingCount) glyphs += " " + game.ratingCount;
+      copy.appendChild(el("p", { class: "rating", text: glyphs }));
     }
     if (game.description) copy.appendChild(el("p", { text: game.description }));
     var actions = el("div", { class: "actions" });
-    actions.appendChild(el("button", { type: "button", class: "primary", "data-nav": "1", "data-play": "hero", "aria-disabled": "true", text: "Play", title: "Coming soon" }));
+    actions.appendChild(el("button", { type: "button", class: "primary", "data-nav": "1", "data-play": "hero", text: "Play" }));
     actions.appendChild(el("button", { type: "button", class: "text-btn", "data-nav": "1", "data-fav": game.key, text: isFav(game.key) ? "Favorited" : "Favorite" }));
     actions.appendChild(el("button", { type: "button", class: "text-btn", "data-nav": "1", "data-collect": game.key, text: "Add to Collection" }));
+    actions.appendChild(el("button", { type: "button", class: "text-btn", "data-nav": "1", "data-overflow": "1", text: "More" }));
     copy.appendChild(actions);
     body.appendChild(copy);
     hero.appendChild(body);
@@ -512,14 +593,20 @@
 
     var layout = el("div", { class: "detail" });
     var tabs = el("div", { class: "tabs", role: "tablist" });
-    ["versions", "details", "related"].forEach(function (name) {
-      var label = name.charAt(0).toUpperCase() + name.slice(1);
+    [
+      ["versions", "Versions"],
+      ["details", "Details"],
+      ["screenshots", "Screenshots"],
+      ["videos", "Videos"],
+      ["achievements", "Achievements"],
+      ["related", "Related Games"]
+    ].forEach(function (pair) {
       tabs.appendChild(el("button", {
         type: "button",
-        class: "text-btn" + (state.tab === name ? " active" : ""),
+        class: "text-btn" + (state.tab === pair[0] ? " active" : ""),
         "data-nav": "1",
-        "data-tab": name,
-        text: label
+        "data-tab": pair[0],
+        text: pair[1]
       }));
     });
     layout.appendChild(tabs);
@@ -529,6 +616,9 @@
   }
 
   function gamePanel(game) {
+    if (state.tab === "screenshots" || state.tab === "videos" || state.tab === "achievements") {
+      return el("div", { class: "empty", text: "Coming later" });
+    }
     if (state.tab === "details") {
       var kv = el("div", { class: "kv" });
       function line(label, value) {
@@ -574,8 +664,16 @@
       var heading = el("h3", { text: fmt.versionName(version.file) || version.file || "ROM" });
       if (version.best) heading.appendChild(el("span", { class: "pill", text: "Best Experience" }));
       info.appendChild(heading);
-      info.appendChild(el("p", { class: "tiny", text: fmt.joinParts([game.system, version.region, version.revision, (version.ext || "").toUpperCase(), fmt.formatBytes(version.sizeBytes)]) }));
-      var play = el("button", { type: "button", class: "primary", "data-nav": "1", "data-play": String(index), "aria-disabled": "true", text: "Play", title: "Coming soon" });
+      info.appendChild(el("p", { class: "tiny", text: fmt.joinParts([version.region, (version.ext || "").toUpperCase(), fmt.formatBytes(version.sizeBytes)]) }));
+      var why = version.playable === false ? (version.reason || "Unavailable") : "";
+      var play = el("button", {
+        type: "button",
+        class: version.best && !why ? "primary" : "text-btn",
+        "data-nav": "1",
+        "data-play": String(index),
+        text: why || "Play",
+        title: why || "Play"
+      });
       info.appendChild(play);
       card.appendChild(info);
       wrap.appendChild(card);
@@ -676,7 +774,7 @@
     if (name === "home") return renderHome(main);
     if (name === "library") return renderLibrary(main);
     if (name === "favorites") return renderKeyed(main, "Favorites", state.favorites, "Star a game to keep it here.");
-    if (name === "recent") return renderKeyed(main, "Recently Viewed", state.recent, "Games you open will show up here.");
+    if (name === "recent") return renderKeyed(main, "Recently Played", state.recent, "Games you play will show up here.");
     if (name === "collections") return renderCollections(main);
     if (name === "collection") return renderKeyed(main, state.route.id || "Collection", keysFor(state.route.id), "This collection is empty.");
     if (name === "platforms") return renderPlatforms(main);
@@ -1061,6 +1159,34 @@
     unwatch = watchDialog(cancel, ok, close);
   }
 
+  function moreMenu() {
+    if (!state.current) return;
+    var back = el("div", { class: "modal-back" });
+    var dialog = el("div", { class: "dialog", role: "dialog", "aria-modal": "true", "aria-label": "More" });
+    dialog.appendChild(el("h2", { text: "More" }));
+    [["details", "Details"], ["related", "Related Games"]].forEach(function (pair) {
+      dialog.appendChild(el("button", { type: "button", class: "text-btn", "data-nav": "1", "data-jump": pair[0], text: pair[1] }));
+    });
+    var cancel = el("button", { type: "button", class: "text-btn", text: "Close" });
+    dialog.appendChild(el("div", { class: "dlg-actions" }, [cancel]));
+    back.appendChild(dialog);
+    document.getElementById("modal").replaceChildren(back);
+    var unwatch = function () {};
+    function close() {
+      unwatch();
+      document.getElementById("modal").replaceChildren();
+    }
+    cancel.addEventListener("click", close);
+    dialog.addEventListener("click", function (event) {
+      var jump = event.target.closest("[data-jump]");
+      if (!jump) return;
+      state.tab = jump.getAttribute("data-jump");
+      close();
+      drawGame(document.getElementById("main"), state.current);
+    });
+    unwatch = watchDialog(cancel, cancel, close);
+  }
+
   function bestVersion(game) {
     var versions = (game && game.versions) || [];
     for (var i = 0; i < versions.length; i++) if (versions[i].best) return versions[i];
@@ -1089,7 +1215,7 @@
     if (play) {
       var index = play.getAttribute("data-play");
       var version = index === "hero" ? bestVersion(state.current) : ((state.current && state.current.versions) || [])[Number(index)];
-      playGame(state.current, version);
+      playGame(state.current, version, play);
       return;
     }
     var restore = event.target.closest("[data-restore]");
@@ -1115,6 +1241,7 @@
     var collection = event.target.closest("[data-collection]");
     if (collection) { go({ name: "collection", id: collection.getAttribute("data-collection") }); return; }
     if (event.target.closest("[data-new-collection]")) { promptCollection(); return; }
+    if (event.target.closest("[data-overflow]")) { moreMenu(); return; }
     if (event.target.closest("[data-collect]")) { collectionDialog(event.target.closest("[data-collect]").getAttribute("data-collect")); return; }
     if (event.target.closest("[data-rescan]")) {
       api("rescan", {}).then(function () {
@@ -1144,7 +1271,7 @@
 
   document.getElementById("gear").addEventListener("click", function () { go({ name: "settings" }); });
   document.getElementById("sidebar").addEventListener("click", onNav);
-  document.getElementById("tabbar").addEventListener("click", onNav);
+  document.getElementById("switcher").addEventListener("click", onNav);
   function onNav(event) {
     var button = event.target.closest("[data-go]");
     if (!button) return;
@@ -1207,24 +1334,35 @@
   });
 
   function buildNav() {
-    var sidebar = document.getElementById("sidebar");
+    var sidebar = document.getElementById("side-nav");
+    var switcher = document.getElementById("switcher");
     NAV.forEach(function (item) {
       var button = el("button", { type: "button", class: "nav-btn", "data-nav": "1", "data-go": item[0] });
       button.appendChild(svg(item[2]));
       button.appendChild(document.createTextNode(item[1]));
       sidebar.appendChild(button);
+      switcher.appendChild(el("button", { type: "button", class: "chip", "data-nav": "1", "data-go": item[0], text: item[1] }));
     });
-    var total = el("div", { class: "total" });
-    total.appendChild(document.createTextNode("Total Games"));
-    total.appendChild(el("b", { id: "total-games", text: "0" }));
-    sidebar.appendChild(total);
-    var tabs = document.getElementById("tabbar");
-    TABS.forEach(function (item) {
-      var button = el("button", { type: "button", class: "tab", "data-nav": "1", "data-go": item[0] });
-      button.appendChild(svg(item[2]));
-      button.appendChild(el("span", { text: item[1] }));
-      tabs.appendChild(button);
-    });
+  }
+
+  function tickClock() {
+    var node = document.getElementById("clock");
+    if (!node) return;
+    var now = new Date();
+    var hours = String(now.getHours()).padStart(2, "0");
+    var minutes = String(now.getMinutes()).padStart(2, "0");
+    node.textContent = hours + ":" + minutes;
+    node.setAttribute("datetime", now.toISOString());
+  }
+
+  function readHostApi(value) {
+    if (typeof value === "number" && isFinite(value)) return value;
+    if (typeof value === "string" && value.trim() !== "" && isFinite(Number(value))) return Number(value);
+    if (value && typeof value === "object") {
+      if (value.hostApi != null) return readHostApi(value.hostApi);
+      if (value.version != null) return readHostApi(value.version);
+    }
+    return 1;
   }
 
   async function loadSystems() {
@@ -1249,11 +1387,26 @@
 
   async function boot() {
     buildNav();
-    hostCall("registerNavItem", {
-      id: "rom-manager",
-      title: "ROM Manager",
-      url: "/Moonfin/Plugins/rom-manager/files/client/index.html"
-    }).catch(function () {});
+    tickClock();
+    setInterval(tickClock, 30000);
+    var hostApi = 1;
+    try {
+      hostApi = readHostApi(await hostCall("getHostApiVersion", {}));
+    } catch (e) {
+      hostApi = 1;
+    }
+    if (hostApi < 2) {
+      hostCall("registerNavItem", {
+        id: "rom-manager",
+        title: "ROM Manager",
+        url: "/Moonfin/Plugins/rom-manager/files/client/index.html"
+      }).catch(function () {});
+    }
+    if (window.MoFinHost && typeof window.MoFinHost.onEvent === "function") {
+      window.MoFinHost.onEvent(function (event) {
+        if (event && event.type === "gameExited") render();
+      });
+    }
     hostCall("getUserContext", {}).catch(function () {});
     try {
       await Promise.all([loadStore(), loadSystems()]);

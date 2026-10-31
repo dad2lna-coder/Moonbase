@@ -1,16 +1,16 @@
 {
   "id": "rom-manager",
   "name": "ROM Manager",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Browse, search and tidy your ROM library.",
   "provides": [],
   "requires": [],
-  "slots": [],
+  "slots": ["games"],
   "client": {
     "html": "client/index.html",
     "js": "client/app.js"
   },
   "server": "RomManagerModule",
   "minHostApi": 1,
-  "proxyAccess": "admin"
+  "proxyAccess": "user"
 }

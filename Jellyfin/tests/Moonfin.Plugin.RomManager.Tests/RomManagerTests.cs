@@ -1,11 +1,15 @@
 using System.Net;
 using System.Net.Http.Headers;
+using System.Reflection;
 using System.Text;
 using System.Text.Json;
+using MediaBrowser.Controller.Library;
+using MediaBrowser.Model.Entities;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Moonfin.Plugins.RomManager;
 using Moonfin.Server.Plugins;
+using Moonfin.Server.Services;
 using Xunit;
 
 namespace Moonfin.Plugin.RomManager.Tests;
@@ -166,6 +170,76 @@ public class RomManagerRouteTests
         var europe = Assert.Single(versions, version => version.GetProperty("region").GetString() == "Europe");
         Assert.Equal("Rev 1", europe.GetProperty("revision").GetString());
         Assert.Equal("sfc", europe.GetProperty("ext").GetString());
+    }
+
+    [Fact]
+    public async Task LaunchRejectsUnknownKeysMembersTraversalAndTrash()
+    {
+        var module = Module(Library());
+        var unknown = await Json(module.Launch(Req("""{"key":"missing","p":"NES/Mario"}""")));
+        Assert.False(unknown.GetProperty("ok").GetBoolean());
+        Assert.Equal("unknown key", unknown.GetProperty("error").GetString());
+
+        var member = await Json(module.Launch(Req("""{"key":"m:SNES/Chrono","p":"NES/Mario"}""")));
+        Assert.False(member.GetProperty("ok").GetBoolean());
+        Assert.Equal("not a member", member.GetProperty("error").GetString());
+
+        var traversal = await Json(module.Launch(Req("""{"key":"m:SNES/Chrono","p":"SNES/../Chrono"}""")));
+        Assert.False(traversal.GetProperty("ok").GetBoolean());
+        Assert.Equal("invalid path", traversal.GetProperty("error").GetString());
+
+        var trash = await Json(module.Launch(Req("""{"key":"m:SNES/Chrono","p":"batch/NES/Mario"}""")));
+        Assert.False(trash.GetProperty("ok").GetBoolean());
+        Assert.Equal("trash path", trash.GetProperty("error").GetString());
+    }
+
+    [Fact]
+    public async Task LaunchHandsALibraryRomToTheExistingPlayer()
+    {
+        var temp = Directory.CreateDirectory(Path.Combine(Path.GetTempPath(), "moonfin-launch-" + Guid.NewGuid().ToString("N")));
+        try
+        {
+            var romRoot = Path.Combine(temp.FullName, "roms");
+            var rom = Path.Combine(romRoot, "SNES", "Chrono", "Chrono Trigger (USA).sfc");
+            Directory.CreateDirectory(Path.GetDirectoryName(rom)!);
+            File.WriteAllBytes(rom, [1, 2, 3, 4]);
+
+            var library = DispatchProxy.Create<ILibraryManager, FolderLibrary>();
+            ((FolderLibrary)(object)library).Folders.Add(new VirtualFolderInfo
+            {
+                Name = "Retro Games",
+                ItemId = "retro-games",
+                Locations = new[] { romRoot },
+            });
+            var games = new GamesService(library);
+            var plugins = Directory.CreateDirectory(Path.Combine(temp.FullName, "plugins"));
+            Directory.CreateDirectory(Path.Combine(plugins.FullName, "rom-manager"));
+            var registry = new MoonfinPluginRegistry(new MoonbaseModuleCatalog(), plugins.FullName);
+            registry.WriteConfig("rom-manager", JsonSerializer.Serialize(new Dictionary<string, string> { ["romRoot"] = romRoot }));
+            var services = new ServiceCollection();
+            services.AddSingleton(registry);
+            services.AddSingleton(games);
+
+            var body = await Json(Module(Library()).Launch(Req(
+                """{"key":"m:SNES/Chrono","p":"SNES/Chrono"}""",
+                admin: false,
+                services: services.BuildServiceProvider())));
+            Assert.True(body.GetProperty("ok").GetBoolean());
+            Assert.True(body.GetProperty("playable").GetBoolean());
+            Assert.Equal("retro-games", body.GetProperty("libraryId").GetString());
+            Assert.Equal("snes", body.GetProperty("core").GetString());
+            Assert.Equal("Chrono Trigger (USA).sfc", body.GetProperty("fileName").GetString());
+            Assert.Equal("Chrono Trigger", body.GetProperty("title").GetString());
+            Assert.Equal("SNES", body.GetProperty("system").GetString());
+            Assert.Equal(Path.GetFullPath(rom), DecodeToken(body.GetProperty("gameId").GetString()!));
+            Assert.True(!body.TryGetProperty("reason", out var reason)
+                || reason.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined
+                || string.IsNullOrEmpty(reason.GetString()));
+        }
+        finally
+        {
+            Directory.Delete(temp.FullName, recursive: true);
+        }
     }
 
     [Fact]
@@ -571,6 +645,18 @@ public class RomManagerRouteTests
         }
     }
 
+    private static string DecodeToken(string token)
+    {
+        var padded = token.Replace('-', '+').Replace('_', '/');
+        switch (padded.Length % 4)
+        {
+            case 2: padded += "=="; break;
+            case 3: padded += "="; break;
+        }
+
+        return Encoding.UTF8.GetString(Convert.FromBase64String(padded));
+    }
+
     private static RomManagerModule Module(Func<RecordedCall, HttpResponseMessage> handle) => new(new RecordingHandler(handle));
 
     private static Func<RecordedCall, HttpResponseMessage> Library(string? game = null) => call =>
@@ -734,5 +820,25 @@ public class RomManagerRouteTests
             {
             }
         }
+    }
+}
+
+public class FolderLibrary : DispatchProxy
+{
+    public List<VirtualFolderInfo> Folders { get; } = new();
+
+    protected override object? Invoke(MethodInfo? targetMethod, object?[]? args)
+    {
+        if (targetMethod?.Name == "GetVirtualFolders")
+        {
+            return Folders;
+        }
+
+        if (targetMethod == null || targetMethod.ReturnType == typeof(void))
+        {
+            return null;
+        }
+
+        return targetMethod.ReturnType.IsValueType ? Activator.CreateInstance(targetMethod.ReturnType) : null;
     }
 }

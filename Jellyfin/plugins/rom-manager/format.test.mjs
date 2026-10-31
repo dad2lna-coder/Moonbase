@@ -41,7 +41,9 @@ test("the page has one play path and does not call forbidden routes", () => {
   const html = readFileSync(join(root, "client/index.html"), "utf8");
   assert.match(app, /function playGame\(/);
   assert.equal(app.split("function playGame(").length, 2);
-  assert.match(app, /Playing from ROM Manager is coming soon/);
+  assert.match(app, /api\("launch"/);
+  assert.match(app, /hostCall\("playGame"/);
+  assert.equal(app.includes("Playing from ROM Manager is coming soon"), false);
   assert.equal(app.includes("fetch("), false);
   assert.equal(app.includes("XMLHttpRequest"), false);
   assert.equal(/\blocation\.hash\s*=/.test(app), false);

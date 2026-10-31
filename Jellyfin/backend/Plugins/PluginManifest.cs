@@ -48,6 +48,7 @@ public sealed class PluginManifest
         "playback",
         "settings",
         "events",
+        "games",
     };
 
     [JsonPropertyName("id")]

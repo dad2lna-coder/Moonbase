@@ -232,7 +232,7 @@ async function openClient(options) {
     );
   }
   function clickGo(name) {
-    const button = win.document.querySelector("#tabbar [data-go=\"" + name + "\"]")
+    const button = win.document.querySelector("#switcher [data-go=\"" + name + "\"]")
       || win.document.querySelector("#sidebar [data-go=\"" + name + "\"]");
     assert.ok(button, name);
     button.click();
@@ -264,7 +264,7 @@ test("rapid navigation keeps one Home and never reloads the iframe", async () =>
     assert.equal(session.loads, 1);
     assert.equal(session.dropped, 0);
 
-    for (const name of ["more", "library", "home", "platforms", "library", "favorites", "home"]) {
+    for (const name of ["settings", "library", "home", "platforms", "library", "favorites", "home"]) {
       session.clickGo(name);
     }
 
@@ -274,8 +274,7 @@ test("rapid navigation keeps one Home and never reloads the iframe", async () =>
       const pageHeads = session.heads();
       return pageHeads.length === 1
         && pageHeads[0].textContent === "Home"
-        && text.includes("Recently Viewed")
-        && text.includes("Recently Added")
+        && text.includes("Recently Played")
         && text.includes("Favorites")
         && text.includes("Chrono Trigger")
         && !text.includes("Loading")
