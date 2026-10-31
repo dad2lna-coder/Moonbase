@@ -12,7 +12,7 @@ From this folder:
 ./build-zip.sh
 ```
 
-That builds `Moonfin.Plugin.RomManager.dll` and writes `dist/rom-manager-<version>.zip`. The zip contains only `plugin.json`, `client/`, and `server/Moonfin.Plugin.RomManager.dll`. It does not ship `Moonfin.Server.dll` or Jellyfin assemblies.
+That builds `Moonfin.Plugin.RomManager.dll` and writes `dist/rom-manager-<version>.zip`. The zip contains only `plugin.json`, `client/`, and `server/Moonfin.Plugin.RomManager.dll`. It does not ship `Moonfin.Server.dll` or Jellyfin assemblies. Moonbase stores that server dll as `server/Moonfin.Plugin.RomManager.dll.mbmod` so Jellyfin's plugin scan does not load it.
 
 `dotnet test` for `Jellyfin/server-plugin.sln` runs the xunit suite. `node --test format.test.mjs smoke.test.mjs` checks the client helpers and that every page renders. The smoke test's jsdom dependency stays out of the zip.
 

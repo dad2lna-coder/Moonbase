@@ -205,6 +205,7 @@ public sealed class PluginManifest
         || name.Equals("state.json", StringComparison.OrdinalIgnoreCase)
         || name.Equals("plugin.json", StringComparison.OrdinalIgnoreCase)
         || name.EndsWith(".dll", StringComparison.OrdinalIgnoreCase)
+        || name.EndsWith(MoonbasePlugins.ModuleFileSuffix, StringComparison.OrdinalIgnoreCase)
         || name.EndsWith(".pdb", StringComparison.OrdinalIgnoreCase)
         || name.EndsWith(".so", StringComparison.OrdinalIgnoreCase);
 
@@ -291,4 +292,7 @@ public static class MoonbasePlugins
     public const string FolderName = "moonfin-plugins";
 
     public const string StateFileName = "_state.json";
+
+    /// <summary>On-disk name suffix for a server module. Jellyfin's plugin scan does not load it.</summary>
+    public const string ModuleFileSuffix = ".dll.mbmod";
 }

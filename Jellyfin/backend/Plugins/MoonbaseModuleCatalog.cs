@@ -7,12 +7,11 @@ using Microsoft.Extensions.DependencyInjection;
 namespace Moonfin.Server.Plugins;
 
 /// <summary>
-/// Modules compiled into Moonbase, plus server dlls under <c>{data}/moonfin-plugins</c>.
+/// Modules compiled into Moonbase, plus server modules under <c>{data}/moonfin-plugins</c>.
+/// Each external module loads in its own context bound to this already-loaded Moonfin.Server.
 /// </summary>
 public sealed class MoonbaseModuleCatalog
 {
-    private static int _resolveHooked;
-
     private readonly List<IMoonbaseModule> _modules = new();
     private readonly Dictionary<string, PluginRouteHandler> _routes = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _failed = new(StringComparer.OrdinalIgnoreCase);
@@ -217,6 +216,19 @@ public sealed class MoonbaseModuleCatalog
             return;
         }
 
+        // Hide every installed plugin's server dll, including ones that stay unloaded,
+        // so the next Jellyfin scan does not treat them as Jellyfin plugins.
+        foreach (var dir in Directory.EnumerateDirectories(full))
+        {
+            var folder = Path.GetFileName(dir);
+            if (folder.StartsWith(".", StringComparison.Ordinal) || folder.StartsWith("_", StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            ModuleAssemblyStore.HideServerAssemblies(dir, Note);
+        }
+
         var discovered = new List<(PluginManifest Manifest, string Directory)>();
         foreach (var dir in Directory.EnumerateDirectories(full))
         {
@@ -282,20 +294,23 @@ public sealed class MoonbaseModuleCatalog
 
     private bool TryLoadModule(string pluginDir, PluginManifest manifest)
     {
+        var serverDir = Path.Combine(pluginDir, "server");
         foreach (var dll in CandidateDlls(pluginDir))
         {
+            var fileName = Path.GetFileName(dll);
             Assembly assembly;
+            var context = new PluginModuleLoadContext(manifest.Id, serverDir);
             try
             {
-                assembly = AssemblyLoadContext.Default.LoadFromAssemblyPath(dll);
+                assembly = context.LoadModule(dll);
             }
             catch (Exception ex)
             {
-                Note(manifest.Id + " could not load " + Path.GetFileName(dll) + " (" + ex.GetType().Name + ").");
+                Note(manifest.Id + " could not load " + fileName + " (" + Describe(ex) + ").");
                 continue;
             }
 
-            foreach (var type in SafeTypes(assembly))
+            foreach (var type in TypesOrNote(assembly, manifest.Id, fileName))
             {
                 if (!IsModuleType(type) || !TypeMatches(type, manifest.Server!))
                 {
@@ -368,14 +383,62 @@ public sealed class MoonbaseModuleCatalog
     private static IEnumerable<string> CandidateDlls(string pluginDir)
     {
         var list = new List<string>();
-        var serverDir = Path.Combine(pluginDir, "server");
-        if (Directory.Exists(serverDir))
-        {
-            list.AddRange(Directory.GetFiles(serverDir, "*.dll"));
-        }
+        Collect(Path.Combine(pluginDir, "server"));
+        Collect(pluginDir);
+        return list;
 
-        list.AddRange(Directory.GetFiles(pluginDir, "*.dll"));
-        return list.Where(path => !IsHostAssembly(Path.GetFileName(path)));
+        void Collect(string dir)
+        {
+            if (!Directory.Exists(dir))
+            {
+                return;
+            }
+
+            string[] files;
+            try
+            {
+                files = Directory.GetFiles(dir);
+            }
+            catch
+            {
+                return;
+            }
+
+            var hidden = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var modules = new List<string>();
+            var leftovers = new List<string>();
+            foreach (var path in files)
+            {
+                var name = Path.GetFileName(path);
+                if (!name.EndsWith(MoonbasePlugins.ModuleFileSuffix, StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                var logical = ModuleAssemblyStore.LogicalAssemblyFileName(name);
+                if (IsHostAssembly(logical))
+                {
+                    continue;
+                }
+
+                modules.Add(path);
+                hidden.Add(logical);
+            }
+
+            foreach (var path in files)
+            {
+                var name = Path.GetFileName(path);
+                if (!ModuleAssemblyStore.IsBareDll(name) || hidden.Contains(name) || IsHostAssembly(name))
+                {
+                    continue;
+                }
+
+                leftovers.Add(path);
+            }
+
+            list.AddRange(modules);
+            list.AddRange(leftovers);
+        }
     }
 
     private static bool IsHostAssembly(string fileName) =>
@@ -409,6 +472,99 @@ public sealed class MoonbaseModuleCatalog
         {
             return Array.Empty<Type>();
         }
+    }
+
+    private IEnumerable<Type> TypesOrNote(Assembly assembly, string id, string fileName)
+    {
+        try
+        {
+            return assembly.GetTypes();
+        }
+        catch (ReflectionTypeLoadException ex)
+        {
+            Note(id + " could not load types from " + fileName + " (" + Describe(ex) + ").");
+            return ex.Types.Where(type => type != null)!;
+        }
+        catch (Exception ex)
+        {
+            Note(id + " could not load types from " + fileName + " (" + Describe(ex) + ").");
+            return Array.Empty<Type>();
+        }
+    }
+
+    private static string Describe(Exception ex)
+    {
+        var parts = new List<string>();
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        Walk(ex);
+        return parts.Count == 0 ? ex.GetType().Name : string.Join("; ", parts);
+
+        void Walk(Exception? item)
+        {
+            if (item == null)
+            {
+                return;
+            }
+
+            if (item is ReflectionTypeLoadException reflection)
+            {
+                var any = false;
+                if (reflection.LoaderExceptions != null)
+                {
+                    foreach (var inner in reflection.LoaderExceptions)
+                    {
+                        if (inner == null)
+                        {
+                            continue;
+                        }
+
+                        any = true;
+                        Walk(inner);
+                    }
+                }
+
+                if (!any)
+                {
+                    Push(reflection);
+                }
+
+                return;
+            }
+
+            Push(item);
+            if (item.InnerException != null)
+            {
+                Walk(item.InnerException);
+            }
+        }
+
+        void Push(Exception item)
+        {
+            var message = item.Message.Replace('\r', ' ').Replace('\n', ' ').Trim();
+            if (message.Length > 500)
+            {
+                message = message[..500];
+            }
+
+            var text = item.GetType().Name + ": " + message;
+            if (seen.Add(text))
+            {
+                parts.Add(text);
+            }
+        }
+    }
+
+    private static Assembly? FindLoaded(AssemblyLoadContext context, string simpleName)
+    {
+        foreach (var assembly in context.Assemblies)
+        {
+            if (string.Equals(assembly.GetName().Name, simpleName, StringComparison.Ordinal))
+            {
+                return assembly;
+            }
+        }
+
+        return null;
     }
 
     private static string? ResolvePluginsRoot(IServiceCollection services, IServerApplicationHost applicationHost)
@@ -458,20 +614,35 @@ public sealed class MoonbaseModuleCatalog
 
     private static void EnsureResolveHook()
     {
-        if (Interlocked.Exchange(ref _resolveHooked, 1) != 0)
+        // Each loaded copy of this assembly has its own statics. The guard lives on the
+        // AppDomain so a second Moonfin.Server (tests, or a nested host) cannot register
+        // a hook that hands out the wrong Moonfin.Server.
+        const string key = "Moonfin.ModuleResolveHook";
+        if (AppDomain.CurrentDomain.GetData(key) != null)
         {
             return;
         }
 
+        AppDomain.CurrentDomain.SetData(key, "1");
         AppDomain.CurrentDomain.AssemblyResolve += (_, args) =>
         {
             var requested = new AssemblyName(args.Name).Name;
-            if (string.Equals(requested, "Moonfin.Server", StringComparison.Ordinal))
+            if (!string.Equals(requested, "Moonfin.Server", StringComparison.Ordinal))
             {
-                return typeof(IMoonbaseModule).Assembly;
+                return null;
             }
 
-            return null;
+            var requesting = args.RequestingAssembly;
+            if (requesting != null)
+            {
+                var context = AssemblyLoadContext.GetLoadContext(requesting);
+                if (context != null && !ReferenceEquals(context, AssemblyLoadContext.Default))
+                {
+                    return null;
+                }
+            }
+
+            return FindLoaded(AssemblyLoadContext.Default, "Moonfin.Server");
         };
     }
 
@@ -523,5 +694,116 @@ public sealed class MoonbaseModuleCatalog
 
             _routes[RouteKey(_id, method, path)] = handler;
         }
+    }
+
+    /// <summary>
+    /// One context per module. Load and the Resolving handler both return this process's
+    /// Moonfin.Server — the copy that defined <see cref="IMoonbaseModule"/> — so the cast
+    /// in TryAdd is the same type Jellyfin loaded. Load has to answer: a null result lets
+    /// the default context supply its own Moonfin.Server before Resolving runs.
+    /// </summary>
+    private sealed class PluginModuleLoadContext : AssemblyLoadContext
+    {
+        private static int _sequence;
+
+        private readonly string _serverDir;
+        private string? _mainAssembly;
+
+        public PluginModuleLoadContext(string id, string serverDir)
+            : base("moonfin-plugin-" + id + "-" + Interlocked.Increment(ref _sequence), isCollectible: false)
+        {
+            _serverDir = serverDir;
+            Resolving += (_, name) => ResolveDependency(name);
+        }
+
+        public Assembly LoadModule(string path)
+        {
+            _mainAssembly ??= Path.GetFileNameWithoutExtension(ModuleAssemblyStore.LogicalAssemblyFileName(Path.GetFileName(path)));
+            try
+            {
+                return LoadFromAssemblyPath(path);
+            }
+            catch (Exception ex) when (UseStream(path, ex))
+            {
+                using var stream = File.Open(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+                return LoadFromStream(stream);
+            }
+        }
+
+        protected override Assembly? Load(AssemblyName assemblyName) => ResolveDependency(assemblyName);
+
+        private Assembly? ResolveDependency(AssemblyName assemblyName)
+        {
+            var simple = assemblyName.Name;
+            if (string.IsNullOrEmpty(simple) || string.Equals(simple, _mainAssembly, StringComparison.Ordinal))
+            {
+                return null;
+            }
+
+            // Same Type object as this catalog. Never the default context's Moonfin.Server
+            // when Jellyfin (or a test host) loaded this one somewhere else.
+            if (string.Equals(simple, "Moonfin.Server", StringComparison.Ordinal))
+            {
+                return typeof(IMoonbaseModule).Assembly;
+            }
+
+            var host = AssemblyLoadContext.GetLoadContext(typeof(IMoonbaseModule).Assembly) ?? Default;
+            var found = FindLoaded(host, simple);
+            if (found != null)
+            {
+                return found;
+            }
+
+            if (!ReferenceEquals(host, Default))
+            {
+                found = FindLoaded(Default, simple);
+                if (found != null && !string.Equals(found.GetName().Name, "Moonfin.Server", StringComparison.Ordinal))
+                {
+                    return found;
+                }
+            }
+
+            if (IsHostAssemblyName(simple))
+            {
+                return null;
+            }
+
+            var path = Probe(_serverDir, simple);
+            return path == null ? null : LoadModule(path);
+        }
+
+        private static bool UseStream(string path, Exception ex) =>
+            path.EndsWith(MoonbasePlugins.ModuleFileSuffix, StringComparison.OrdinalIgnoreCase)
+            && ex is ArgumentException or NotSupportedException or BadImageFormatException or FileLoadException;
+
+        private static string? Probe(string directory, string simpleName)
+        {
+            if (string.IsNullOrEmpty(directory) || !Directory.Exists(directory))
+            {
+                return null;
+            }
+
+            var mbmod = Path.Combine(directory, simpleName + MoonbasePlugins.ModuleFileSuffix);
+            if (File.Exists(mbmod))
+            {
+                return mbmod;
+            }
+
+            var dll = Path.Combine(directory, simpleName + ".dll");
+            if (File.Exists(dll))
+            {
+                return dll;
+            }
+
+            return null;
+        }
+
+        private static bool IsHostAssemblyName(string simpleName) =>
+            simpleName.Equals("Moonfin.Server", StringComparison.Ordinal)
+            || simpleName.Equals("SharpCompress", StringComparison.OrdinalIgnoreCase)
+            || simpleName.StartsWith("MediaBrowser.", StringComparison.OrdinalIgnoreCase)
+            || simpleName.StartsWith("Microsoft.", StringComparison.OrdinalIgnoreCase)
+            || simpleName.StartsWith("System.", StringComparison.OrdinalIgnoreCase)
+            || simpleName.Equals("Newtonsoft.Json", StringComparison.OrdinalIgnoreCase);
     }
 }

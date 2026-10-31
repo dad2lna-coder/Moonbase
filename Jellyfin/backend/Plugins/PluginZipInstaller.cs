@@ -29,6 +29,7 @@ public sealed class PluginInstallResult
 /// <summary>
 /// Unpacks a plugin zip into <c>{data}/moonfin-plugins/{id}</c>. Rejects the whole archive
 /// when any entry escapes the destination. Updates keep config.json and data/.
+/// Server assemblies from the zip (<c>server/*.dll</c>) are stored as <c>server/*.dll.mbmod</c>.
 /// </summary>
 public static class PluginZipInstaller
 {
@@ -252,6 +253,10 @@ public static class PluginZipInstaller
                 {
                     return FailCleanup(staging, "Plugin id is not a safe folder name.");
                 }
+
+                // Rename before the folder is moved into place so a new install never
+                // lands a .dll where Jellyfin's plugin scan will pick it up.
+                ModuleAssemblyStore.HideServerAssemblies(staging);
 
                 if (Directory.Exists(destinationFull))
                 {

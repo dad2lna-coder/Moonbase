@@ -1,5 +1,6 @@
 using System.IO.Compression;
 using System.Reflection;
+using System.Runtime.Loader;
 using System.Text;
 using System.Text.Json;
 using Microsoft.AspNetCore.Http;
@@ -312,6 +313,31 @@ public class PluginZipInstallerTests
         }
     }
 
+    [Fact]
+    public void ServerDllIsStoredAsMbmod()
+    {
+        var root = Directory.CreateDirectory(Path.Combine(Path.GetTempPath(), "moonfin-zip-" + Guid.NewGuid().ToString("N")));
+        try
+        {
+            using var zip = MakeZip(
+                ("plugin.json", PluginJson()),
+                ("server/Moonfin.Plugin.Hello.dll", "MZ-not-really"));
+            var installed = PluginZipInstaller.Install(zip, root.FullName);
+            Assert.True(installed.Ok, installed.Error);
+            var server = Path.Combine(root.FullName, "hello", "server");
+            var stored = Path.Combine(server, "Moonfin.Plugin.Hello.dll.mbmod");
+            Assert.True(File.Exists(stored));
+            Assert.Equal("MZ-not-really", File.ReadAllText(stored));
+            Assert.DoesNotContain(
+                Directory.EnumerateFiles(server),
+                path => Path.GetFileName(path).EndsWith(".dll", StringComparison.OrdinalIgnoreCase));
+        }
+        finally
+        {
+            Directory.Delete(root.FullName, recursive: true);
+        }
+    }
+
     private static string PluginJson() =>
         """
         {"id":"hello","name":"Hello","version":"1.0.0","description":"Hi","provides":["hello.homeRow"],"requires":[],"slots":["homeRow"],"server":"HelloModule","minHostApi":1,"client":{"html":"client/index.html","js":"client/app.js"}}
@@ -447,6 +473,160 @@ public class HelloPluginSampleTests
         var result = await handler!(new PluginRouteRequest());
         Assert.Contains("Hello, Moonfin", result.Body, StringComparison.Ordinal);
         Assert.DoesNotContain("apiKey", result.Body, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void HelloActivatesWhenMoonfinServerIsOutsideTheDefaultContext()
+    {
+        var serverDll = Path.Combine(AppContext.BaseDirectory, "Moonfin.Server.dll");
+        Assert.True(File.Exists(serverDll), "Moonfin.Server.dll was not copied beside the tests.");
+        var helloDll = HelloDll();
+        Assert.True(File.Exists(helloDll), "Build the hello sample before running tests.");
+
+        var host = new JellyfinHostLoadContext();
+        var serverAssembly = host.LoadFromAssemblyPath(serverDll);
+        Assert.NotSame(typeof(IMoonbaseModule).Assembly, serverAssembly);
+        Assert.Equal("Moonfin.Server", serverAssembly.GetName().Name);
+
+        var root = Directory.CreateDirectory(Path.Combine(Path.GetTempPath(), "moonfin-alc-" + Guid.NewGuid().ToString("N")));
+        try
+        {
+            var pluginDir = Directory.CreateDirectory(Path.Combine(root.FullName, "hello"));
+            File.Copy(Path.Combine(Path.GetDirectoryName(HelloSource())!, "plugin.json"), Path.Combine(pluginDir.FullName, "plugin.json"));
+            var serverDir = Directory.CreateDirectory(Path.Combine(pluginDir.FullName, "server"));
+            File.Copy(helloDll, Path.Combine(serverDir.FullName, "Moonfin.Plugin.Hello.dll"));
+
+            var catalogType = serverAssembly.GetType("Moonfin.Server.Plugins.MoonbaseModuleCatalog", throwOnError: true)!;
+            var catalog = Activator.CreateInstance(catalogType);
+            Assert.NotNull(catalog);
+            var ensure = catalogType.GetMethod("EnsureExternalLoaded", new[] { typeof(string) });
+            Assert.NotNull(ensure);
+            Exception? loadError = null;
+            try
+            {
+                ensure!.Invoke(catalog, new object[] { root.FullName });
+            }
+            catch (TargetInvocationException ex)
+            {
+                loadError = ex.InnerException ?? ex;
+            }
+
+            var stored = Path.Combine(serverDir.FullName, "Moonfin.Plugin.Hello.dll.mbmod");
+            Assert.True(File.Exists(stored));
+            var bareDlls = Directory.EnumerateFiles(serverDir.FullName)
+                .Select(Path.GetFileName)
+                .Where(name => name!.EndsWith(".dll", StringComparison.OrdinalIgnoreCase))
+                .ToArray();
+            Assert.Empty(bareDlls);
+
+            var notes = ReadStrings(catalog!, catalogType, "Notes");
+            Assert.True(loadError == null, (loadError?.ToString() ?? string.Empty) + " | " + string.Join(" | ", notes));
+
+            var modules = ((System.Collections.IEnumerable)catalogType.GetProperty("Modules")!.GetValue(catalog)!).Cast<object>().ToList();
+            Assert.True(modules.Count == 1, "modules=" + modules.Count + " notes=" + string.Join(" | ", notes));
+            var module = modules[0];
+            Assert.Equal("hello", module.GetType().GetProperty("Id")!.GetValue(module));
+            Assert.Equal("1.0.0", module.GetType().GetProperty("Version")!.GetValue(module));
+            var provides = ((System.Collections.IEnumerable)module.GetType().GetProperty("Provides")!.GetValue(module)!).Cast<object>().Select(item => item?.ToString());
+            Assert.Contains("hello.homeRow", provides);
+
+            var contract = module.GetType().GetInterface("Moonfin.Server.Plugins.IMoonbaseModule");
+            Assert.NotNull(contract);
+            Assert.Same(serverAssembly, contract!.Assembly);
+            Assert.NotSame(typeof(IMoonbaseModule).Assembly, contract.Assembly);
+
+            var failed = ((System.Collections.IEnumerable)catalogType.GetMethod("FailedIds")!.Invoke(catalog, null)!).Cast<object>().Select(item => item?.ToString());
+            Assert.DoesNotContain("hello", failed);
+            Assert.DoesNotContain(notes, note => note.Contains("could not load", StringComparison.OrdinalIgnoreCase) || note.Contains("was not found", StringComparison.OrdinalIgnoreCase));
+        }
+        finally
+        {
+            try
+            {
+                Directory.Delete(root.FullName, recursive: true);
+            }
+            catch (IOException)
+            {
+                // The loaded module may keep the file mapped. The temp dir is disposable.
+            }
+        }
+    }
+
+    [Fact]
+    public void HelloActivatesFromTheCatalogAndHidesTheServerDll()
+    {
+        var root = Directory.CreateDirectory(Path.Combine(Path.GetTempPath(), "moonfin-cat-" + Guid.NewGuid().ToString("N")));
+        try
+        {
+            var pluginDir = Directory.CreateDirectory(Path.Combine(root.FullName, "hello"));
+            File.Copy(Path.Combine(Path.GetDirectoryName(HelloSource())!, "plugin.json"), Path.Combine(pluginDir.FullName, "plugin.json"));
+            var serverDir = Directory.CreateDirectory(Path.Combine(pluginDir.FullName, "server"));
+            File.Copy(HelloDll(), Path.Combine(serverDir.FullName, "Moonfin.Plugin.Hello.dll"));
+
+            var catalog = new MoonbaseModuleCatalog();
+            catalog.EnsureExternalLoaded(root.FullName);
+
+            Assert.True(File.Exists(Path.Combine(serverDir.FullName, "Moonfin.Plugin.Hello.dll.mbmod")));
+            Assert.DoesNotContain(
+                Directory.EnumerateFiles(serverDir.FullName),
+                path => Path.GetFileName(path).EndsWith(".dll", StringComparison.OrdinalIgnoreCase));
+            var module = Assert.Single(catalog.Modules);
+            Assert.Equal("hello", module.Id);
+            Assert.Equal("1.0.0", module.Version);
+            Assert.Contains("hello.homeRow", module.Provides);
+            Assert.DoesNotContain("hello", catalog.FailedIds());
+            Assert.DoesNotContain(catalog.Notes, note => note.Contains("could not load", StringComparison.OrdinalIgnoreCase) || note.Contains("was not found", StringComparison.OrdinalIgnoreCase));
+        }
+        finally
+        {
+            try
+            {
+                Directory.Delete(root.FullName, recursive: true);
+            }
+            catch (IOException)
+            {
+            }
+        }
+    }
+
+    private static IEnumerable<string> ReadStrings(object target, Type type, string property)
+    {
+        var value = type.GetProperty(property)!.GetValue(target);
+        return ((System.Collections.IEnumerable)value!).Cast<object>().Select(item => item?.ToString() ?? string.Empty);
+    }
+
+    private sealed class JellyfinHostLoadContext : AssemblyLoadContext
+    {
+        public JellyfinHostLoadContext()
+            : base("jellyfin-plugin-host-sim", isCollectible: false)
+        {
+            Resolving += (_, assemblyName) =>
+            {
+                if (string.Equals(assemblyName.Name, "Moonfin.Server", StringComparison.Ordinal))
+                {
+                    return null;
+                }
+
+                foreach (var assembly in Default.Assemblies)
+                {
+                    if (string.Equals(assembly.GetName().Name, assemblyName.Name, StringComparison.Ordinal))
+                    {
+                        return assembly;
+                    }
+                }
+
+                try
+                {
+                    return Default.LoadFromAssemblyName(assemblyName);
+                }
+                catch
+                {
+                    return null;
+                }
+            };
+        }
+
+        protected override Assembly? Load(AssemblyName assemblyName) => null;
     }
 
     private static string HelloSource()

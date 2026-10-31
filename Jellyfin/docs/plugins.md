@@ -10,7 +10,7 @@ Host API is **1** (`minHostApi`).
 {Jellyfin data}/plugins/configurations/Moonfin/moonfin-plugins/{id}/
   plugin.json
   client/                 optional web UI for the MoFin WebView
-  server/                 optional module dll
+  server/                 optional module, stored on disk as *.dll.mbmod
   config.json             admin config, written by Moonbase
   data/{userId}/{key}.json
 ```
@@ -64,6 +64,8 @@ public interface IMoonbaseModule
 ```
 
 `PluginServiceRegistrator` discovers modules and calls `RegisterServices` only for plugins that are enabled and whose `requires` are already met by the host or by another enabled plugin's declared provides. A disabled plugin's DLL is not loaded on the next Jellyfin restart. Put the dll in `server/`. It must be named by `server` (simple type name or namespace-qualified name). Reference `Moonfin.Server` and do not ship that dll or Jellyfin's assemblies inside the zip. `RegisterServices` runs at Jellyfin startup, so a newly uploaded dll is not in the container until restart.
+
+Jellyfin scans every `*.dll` under its plugins directory, and `moonfin-plugins` lives inside that tree. Do not move the folder. A zip still contains `server/Your.Plugin.dll`. Install renames it to `server/Your.Plugin.dll.mbmod`, and startup renames any `server/*.dll` already on disk the same way, including plugins that stay unloaded. Jellyfin's scan then leaves them alone. The module is loaded from that `.dll.mbmod` name.
 
 Routes map under `/Moonfin/Plugins/{id}/`. Do not use `files`, `Data`, or `Proxy` — Moonbase owns those.
 
@@ -172,9 +174,9 @@ client/app.js
 server/Your.Plugin.dll
 ```
 
-Do not put `Moonfin.Server.dll` or Jellyfin dlls in the zip. Paths must stay inside the archive (no `..`, no absolute paths). One top-level folder is fine; Moonbase strips it when `plugin.json` is inside.
+Do not put `Moonfin.Server.dll` or Jellyfin dlls in the zip. Paths must stay inside the archive (no `..`, no absolute paths). One top-level folder is fine; Moonbase strips it when `plugin.json` is inside. After install, `server/Your.Plugin.dll` is stored as `server/Your.Plugin.dll.mbmod`.
 
-3. Install either by copying the folder to `moonfin-plugins/{id}/` or by posting the zip to `/Moonfin/Admin/Plugins/Install` as an administrator.
+3. Install either by copying the folder to `moonfin-plugins/{id}/` or by posting the zip to `/Moonfin/Admin/Plugins/Install` as an administrator. A copied-in `server/*.dll` is renamed on the next Moonbase start.
 4. Restart Jellyfin. The module's `RegisterServices`, `MapRoutes`, and `OnStart` run on startup.
 
 ## Hello sample
@@ -190,7 +192,7 @@ Zip these files:
 - `samples/plugins/hello/plugin.json`
 - `samples/plugins/hello/client/index.html`
 - `samples/plugins/hello/client/app.js`
-- `samples/plugins/hello/bin/Release/net8.0/Moonfin.Plugin.Hello.dll` stored as `server/Moonfin.Plugin.Hello.dll`
+- `samples/plugins/hello/bin/Release/net8.0/Moonfin.Plugin.Hello.dll` stored in the zip as `server/Moonfin.Plugin.Hello.dll` (on disk after install: `server/Moonfin.Plugin.Hello.dll.mbmod`)
 
 Copy the unzipped `hello` folder into `moonfin-plugins/hello/`, or upload the zip, then restart Jellyfin.
 
