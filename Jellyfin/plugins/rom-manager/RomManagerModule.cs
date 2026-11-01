@@ -644,6 +644,7 @@ public sealed class RomManagerModule : IMoonbaseModule
                     sizeBytes = member.Bytes,
                     ks = member.KeepCopy,
                     cover = member.Cover,
+                    cheat = RomTags.IsCheat(member.Tags) ? true : (bool?)null,
                 }),
             }),
         });
@@ -953,7 +954,32 @@ public sealed class RomManagerModule : IMoonbaseModule
         coverPath = game.CoverPath,
         lb = game.Lb,
         cover = game.Cover == 0 ? (int?)null : game.Cover,
+        cheat = CheatFlag(game),
     };
+
+    // "best" when the game's chosen file is a cheat or trainer ROM, "some" when only other
+    // versions are, null otherwise. Labels only: Best Experience scoring is untouched.
+    private static string? CheatFlag(GameRecord game)
+    {
+        RomEntry? best = null;
+        var any = false;
+        foreach (var member in game.Members)
+        {
+            if (best == null && member.BestVersion)
+            {
+                best = member;
+            }
+
+            any |= RomTags.IsCheat(member.Tags);
+        }
+
+        if (!any)
+        {
+            return null;
+        }
+
+        return RomTags.IsCheat((best ?? game.Members[0]).Tags) ? "best" : "some";
+    }
 
     private static object VersionView(RomEntry entry)
     {

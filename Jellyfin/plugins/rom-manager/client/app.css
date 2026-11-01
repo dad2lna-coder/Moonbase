@@ -592,6 +592,28 @@ img[hidden] { display: none; }
 .version-banner { position: relative; min-height: 108px; background: #1b3350 center/cover no-repeat; overflow: hidden; }
 .version div { padding: 10px 12px 12px; }
 .pill { display: inline-block; margin-left: 6px; padding: 2px 7px; border-radius: 999px; background: rgba(61, 206, 147, 0.16); color: var(--ok); font-size: 11px; }
+.pill.cheat {
+  background: rgba(240, 177, 50, 0.18);
+  color: #ffc94d;
+  border: 1px solid rgba(240, 177, 50, 0.55);
+  font-weight: 700;
+}
+.cheat-badge {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 2;
+  padding: 3px 7px;
+  border-radius: 999px;
+  background: linear-gradient(180deg, #ffcf4a, #e59a12);
+  color: #2a1700;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.01em;
+  box-shadow: 0 0 10px rgba(240, 177, 50, 0.55);
+}
+.art.has-vers .cheat-badge { top: 34px; }
+.card:not(.library) .art.has-cheat .star { top: auto; bottom: 8px; }
 .kv { display: grid; grid-template-columns: 110px 1fr; gap: 6px 10px; }
 .kv span { color: var(--muted); }
 

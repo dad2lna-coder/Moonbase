@@ -332,6 +332,10 @@
     main.appendChild(el("div", { class: "banner", text: message || "Could not load the library." }));
   }
 
+  function cheatPill() {
+    return el("span", { class: "pill cheat", title: "Cheat or trainer ROM", text: "Cheat" });
+  }
+
   function cardEl(item, opts) {
     var library = opts && opts.library;
     var card = el("div", { class: "card" + (library ? " library" : ""), tabindex: "0", "data-nav": "1", "data-open": item.key || "" });
@@ -351,6 +355,14 @@
     if (library && Number(item.versions) > 1) {
       art.classList.add("has-vers");
       art.appendChild(el("span", { class: "ver-badge", text: item.versions + " Versions" }));
+    }
+    if (item.cheat) {
+      art.classList.add("has-cheat");
+      art.appendChild(el("span", {
+        class: "cheat-badge",
+        title: item.cheat === "best" ? "The best file is a cheat or trainer ROM" : "Some versions are cheat or trainer ROMs",
+        text: "Cheat"
+      }));
     }
     var star = el("button", {
       class: "star" + (isFav(item.key) ? " on" : ""),
@@ -1080,6 +1092,7 @@
       var info = el("div");
       var heading = el("h3", { text: fmt.versionName(version.file) || version.file || "ROM" });
       if (version.best) heading.appendChild(el("span", { class: "pill", text: "Best Experience" }));
+      if (fmt.isCheatRom(version)) heading.appendChild(cheatPill());
       info.appendChild(heading);
       info.appendChild(el("p", { class: "tiny", text: fmt.joinParts([version.region, (version.ext || "").toUpperCase(), fmt.formatBytes(version.sizeBytes)]) }));
       var why = version.playable === false ? (version.reason || "Unavailable") : "";
@@ -1126,6 +1139,7 @@
           var text = (member.title || member.file || member.p) + " · " + fmt.formatBytes(member.sizeBytes);
           var span = el("span", { text: text });
           if (member.ks) span.appendChild(el("span", { class: "pill", text: "Best Experience" }));
+          if (fmt.isCheatRom(member)) span.appendChild(cheatPill());
           label.appendChild(span);
           box.appendChild(label);
         });

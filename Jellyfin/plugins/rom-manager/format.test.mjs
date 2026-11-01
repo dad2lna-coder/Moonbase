@@ -61,3 +61,24 @@ test("the page has one play path and does not call forbidden routes", () => {
     assert.equal(source.includes("http://") || source.includes("https://"), false);
   }
 });
+
+test("cheat detection: words cheat/trainer and lowercase GoodTools [t] tags only", () => {
+  for (const tag of ["[t]", "[t1]", "[t+3]", "[t1+2C]", "(Cheat)", "(Trainer)", "[cheat codes]", "(TRAINER +5)"]) {
+    assert.equal(fmt.isCheatTag(tag), true, tag);
+  }
+  for (const tag of ["[T+Eng]", "[T-Fre]", "[T+Eng1.0]", "(Translated)", "(USA)", "[!]", "[h1]", "[b1]", "", null, undefined]) {
+    assert.equal(fmt.isCheatTag(tag), false, String(tag));
+  }
+});
+
+test("isCheatRom reads tags, tg, or the file name", () => {
+  assert.equal(fmt.isCheatRom({ tags: ["(USA)", "[t1]"] }), true);
+  assert.equal(fmt.isCheatRom({ tg: ["(Cheat)"] }), true);
+  assert.equal(fmt.isCheatRom({ tags: ["(USA)", "[T+Eng]"], file: "Game (USA) [T+Eng].sfc" }), false);
+  assert.equal(fmt.isCheatRom({ file: "NES/Game (World) [t+2].nes" }), true);
+  assert.equal(fmt.isCheatRom({ file: "Game (Translated).nes" }), false);
+  assert.equal(fmt.isCheatRom({ file: "Trainer Quest (USA).nes" }), false, "title words are not tags");
+  assert.equal(fmt.isCheatRom({ cheat: true }), true);
+  assert.equal(fmt.isCheatRom(null), false);
+  assert.deepEqual(fmt.fileTags("a/Game (USA) [t1].sfc"), ["(USA)", "[t1]"]);
+});

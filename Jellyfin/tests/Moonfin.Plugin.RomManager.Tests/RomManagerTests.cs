@@ -120,7 +120,7 @@ public class RomLibraryTests
     {
       "meta": {"built": true},
       "items": [
-        {"p":"SNES/Chrono-eu","s":"SNES","t":"Chrono Trigger EU","f":"Chrono Trigger (Europe) (Rev 1).sfc","z":50,"y":1995,"tg":["(Europe)","(Rev 1)"],"c":1,"ge":"RPG","pub":"Square","dev":"Square","m":40,"sg":0,"ks":0,"mg":7,"km":0},
+        {"p":"SNES/Chrono-eu","s":"SNES","t":"Chrono Trigger EU","f":"Chrono Trigger (Europe) (Rev 1) [t1].sfc","z":50,"y":1995,"tg":["(Europe)","(Rev 1)","[t1]"],"c":1,"ge":"RPG","pub":"Square","dev":"Square","m":40,"sg":0,"ks":0,"mg":7,"km":0},
         {"p":"SNES/Chrono","s":"SNES","t":"Chrono Trigger","f":"Chrono Trigger (USA).sfc","z":1000,"y":1995,"tg":["(USA)","[!]"],"c":2,"lb":"123","ge":"RPG","pub":"Square","dev":"Square","m":100,"sg":0,"ks":0,"mg":7,"km":1},
         {"p":"NES/Mario","s":"NES","t":"Super Mario Bros.","f":"Super Mario Bros. (World).nes","z":400,"y":1985,"tg":["(World)"],"c":1,"ge":"Platform","pub":"Nintendo","dev":"Nintendo","m":900,"sg":3,"ks":1,"mg":0,"km":0},
         {"p":"NES/Mario-copy","s":"NES","t":"Super Mario Bros.","f":"Super Mario Bros. (World) (copy).nes","z":400,"y":1985,"tg":["(World)"],"c":0,"ge":"Platform","pub":"Nintendo","dev":"Nintendo","m":800,"sg":3,"ks":0,"mg":0,"km":0},
@@ -129,6 +129,38 @@ public class RomLibraryTests
       ]
     }
     """;
+}
+
+public class RomCheatTagTests
+{
+    [Theory]
+    [InlineData("[t]", true)]
+    [InlineData("[t1]", true)]
+    [InlineData("[t+3]", true)]
+    [InlineData("[t1+2C]", true)]
+    [InlineData("(Cheat)", true)]
+    [InlineData("(Trainer)", true)]
+    [InlineData("[CHEAT CODES]", true)]
+    [InlineData("[T+Eng]", false)]
+    [InlineData("[T-Fre]", false)]
+    [InlineData("(Translated)", false)]
+    [InlineData("(USA)", false)]
+    [InlineData("[!]", false)]
+    [InlineData("[h1]", false)]
+    [InlineData("", false)]
+    [InlineData(null, false)]
+    public void DetectsCheatAndTrainerTags(string? tag, bool cheat)
+    {
+        Assert.Equal(cheat, RomTags.IsCheatTag(tag));
+    }
+
+    [Fact]
+    public void IsCheatChecksEveryTag()
+    {
+        Assert.True(RomTags.IsCheat(new[] { "(USA)", "[t1]" }));
+        Assert.False(RomTags.IsCheat(new[] { "(USA)", "[T+Eng]" }));
+        Assert.False(RomTags.IsCheat(null));
+    }
 }
 
 public class RomManagerRouteTests
@@ -141,6 +173,10 @@ public class RomManagerRouteTests
         Assert.True(all.GetProperty("ok").GetBoolean());
         Assert.Equal(5, all.GetProperty("total").GetInt32());
         Assert.Contains(all.GetProperty("items").EnumerateArray(), item => item.GetProperty("key").GetString() == "m:SNES/Chrono" && item.GetProperty("title").GetString() == "Chrono Trigger" && item.GetProperty("versions").GetInt32() == 2);
+
+        var chrono = Assert.Single(all.GetProperty("items").EnumerateArray(), item => item.GetProperty("key").GetString() == "m:SNES/Chrono");
+        Assert.Equal("some", chrono.GetProperty("cheat").GetString());
+        Assert.All(all.GetProperty("items").EnumerateArray().Where(item => item.GetProperty("key").GetString() != "m:SNES/Chrono"), item => Assert.False(item.TryGetProperty("cheat", out _)));
 
         var search = await Json(module.Games(Req("""{"q":"sonic team"}""")));
         Assert.Equal(0, search.GetProperty("total").GetInt32());

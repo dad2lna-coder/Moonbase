@@ -37,6 +37,32 @@
     return dot > 0 ? name.slice(0, dot) : name;
   }
 
+  // Cheat / trainer ROMs: a tag naming "cheat" or "trainer" in any case, or a
+  // GoodTools trainer tag in its lowercase form ([t], [t1], [t+3], [t1+2C]).
+  // Capital [T+Eng] / [T-Fre] are GoodTools translations, not cheats.
+  var TRAINER_TAG = /^\[t\d*(\+[^\]]*)?\]$/;
+
+  function isCheatTag(tag) {
+    var text = String(tag == null ? "" : tag).trim();
+    if (!text) return false;
+    if (/cheat|trainer/i.test(text)) return true;
+    return TRAINER_TAG.test(text);
+  }
+
+  function fileTags(file) {
+    return versionName(file).match(/\([^()]*\)|\[[^\[\]]*\]/g) || [];
+  }
+
+  function isCheatRom(entry) {
+    if (!entry) return false;
+    if (entry.cheat === true) return true;
+    var tags = Array.isArray(entry.tags) ? entry.tags : Array.isArray(entry.tg) ? entry.tg : [];
+    for (var i = 0; i < tags.length; i++) if (isCheatTag(tags[i])) return true;
+    var tagged = fileTags(entry.file || entry.romFile || "");
+    for (var j = 0; j < tagged.length; j++) if (isCheatTag(tagged[j])) return true;
+    return false;
+  }
+
   function safeDecode(value) {
     try {
       return decodeURIComponent(value || "");
@@ -75,6 +101,9 @@
     formatBytes: formatBytes,
     joinParts: joinParts,
     versionName: versionName,
+    isCheatTag: isCheatTag,
+    fileTags: fileTags,
+    isCheatRom: isCheatRom,
     parseRoute: parseRoute,
     routeHash: routeHash
   };

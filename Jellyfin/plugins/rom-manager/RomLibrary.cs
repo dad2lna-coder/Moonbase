@@ -342,6 +342,28 @@ public static class RomTags
         return fileName[(dot + 1)..];
     }
 
+    private static readonly System.Text.RegularExpressions.Regex TrainerTag =
+        new(@"^\[t\d*(\+[^\]]*)?\]$", System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+
+    /// <summary>
+    /// A cheat or trainer ROM: a tag naming "cheat" or "trainer" in any case, or a GoodTools
+    /// trainer tag in its lowercase form ([t], [t1], [t+3]). Capital [T+Eng] is a translation.
+    /// </summary>
+    public static bool IsCheatTag(string? tag)
+    {
+        if (string.IsNullOrWhiteSpace(tag))
+        {
+            return false;
+        }
+
+        var text = tag.Trim();
+        return text.Contains("cheat", StringComparison.OrdinalIgnoreCase)
+            || text.Contains("trainer", StringComparison.OrdinalIgnoreCase)
+            || TrainerTag.IsMatch(text);
+    }
+
+    public static bool IsCheat(IReadOnlyList<string>? tags) => tags != null && tags.Any(IsCheatTag);
+
     private static string Unwrap(string tag)
     {
         var text = tag.Trim();

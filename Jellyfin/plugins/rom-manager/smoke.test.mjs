@@ -19,7 +19,8 @@ const card = {
   versions: 2,
   sizeBytes: 1050,
   cover: 1,
-  coverPath: "SNES/Chrono"
+  coverPath: "SNES/Chrono",
+  cheat: "some"
 };
 
 const game = {
@@ -38,7 +39,8 @@ const game = {
   coverPath: "SNES/Chrono",
   versions: [{
     p: "SNES/Chrono",
-    file: "Chrono Trigger (USA).sfc",
+    file: "Chrono Trigger (USA) [T+Eng].sfc",
+    tags: ["(USA)", "[T+Eng]"],
     ext: "sfc",
     region: "USA",
     sizeBytes: 1050,
@@ -46,7 +48,8 @@ const game = {
     cover: 1
   }, {
     p: "SNES/Unplayable",
-    file: "Unplayable (USA).col",
+    file: "Unplayable (USA) [t1].col",
+    tags: ["(USA)", "[t1]"],
     ext: "col",
     region: "USA",
     sizeBytes: 100,
@@ -94,8 +97,8 @@ function call(method, params) {
         groups: [{
           system: "NES",
           members: [
-            { p: "NES/Mario", title: "Super Mario Bros.", system: "NES", sizeBytes: 400, ks: true },
-            { p: "NES/Mario-copy", title: "Super Mario Bros.", system: "NES", sizeBytes: 400, ks: false }
+            { p: "NES/Mario", title: "Super Mario Bros.", file: "Super Mario Bros. (World) (Translated).nes", system: "NES", sizeBytes: 400, ks: true },
+            { p: "NES/Mario-copy", title: "Super Mario Bros.", file: "Super Mario Bros. (World) [t+2].nes", system: "NES", sizeBytes: 400, ks: false }
           ]
         }]
       });
@@ -248,6 +251,10 @@ test("every page renders, and restore or a duplicate tick does not leave the pag
   assert.match(browse, /2 Versions/);
   assert.match(browse, /Chrono Trigger/);
   assert.equal(document.querySelectorAll("#main [data-sort] option").length, 4);
+  const cheatBadge = document.querySelector("#main .card.library[data-open='m:SNES/Chrono'] .cheat-badge");
+  assert.ok(cheatBadge, "grid card marks a game with a cheat version");
+  assert.equal(cheatBadge.textContent, "Cheat");
+  assert.ok(cheatBadge.closest(".art").querySelector(".ver-badge"), "cheat badge sits beside the versions badge");
   assert.equal(document.querySelector("#main .console[data-console='NES'] .console-name").textContent, "NES");
   for (let i = 0; i < 80 && !document.querySelector("#main .console[data-console='SNES'] .console-cover img"); i++) {
     await new Promise((resolve) => setTimeout(resolve, 15));
@@ -275,6 +282,7 @@ test("every page renders, and restore or a duplicate tick does not leave the pag
   }, "nes grid");
   assert.equal(document.querySelector("#main .console[aria-pressed='true']").getAttribute("data-console"), "NES");
   assert.equal((document.querySelector("#main .grid").textContent || "").includes("Chrono Trigger"), false);
+  assert.equal(document.querySelector("#main .grid .cheat-badge"), null, "no cheat badge without a cheat flag");
   assert.ok(calls.some((entry) => entry.params && entry.params.path === "games" && entry.params.data && entry.params.data.system === "NES"));
 
   const pages = [
@@ -307,6 +315,10 @@ test("every page renders, and restore or a duplicate tick does not leave the pag
   }
   document.querySelector('#main [data-tab="versions"]').click();
   assert.match(document.getElementById("main").textContent, /Available Versions \(2\)/);
+  const versionCards = Array.from(document.querySelectorAll("#main .version"));
+  assert.equal(versionCards[0].querySelector(".pill.cheat"), null, "[T+Eng] is a translation, not a cheat");
+  assert.ok(versionCards[0].querySelector(".pill:not(.cheat)"), "best version keeps Best Experience");
+  assert.equal(versionCards[1].querySelector(".pill.cheat").textContent, "Cheat", "[t1] trainer is marked");
 
   const unplayable = document.querySelector('#main [data-play="1"]');
   assert.ok(unplayable);
@@ -343,6 +355,10 @@ test("every page renders, and restore or a duplicate tick does not leave the pag
   await settle("Settings");
   document.querySelector('#main [data-go="duplicates"]').click();
   await settle("Identical copies");
+  const dupRows = Array.from(document.querySelectorAll("#main .group label.check"));
+  assert.equal(dupRows.length, 2);
+  assert.equal(dupRows[0].querySelector(".pill.cheat"), null, "(Translated) is not a cheat");
+  assert.ok(dupRows[1].querySelector(".pill.cheat"), "[t+2] copy is marked Cheat");
   const box = document.querySelector("[data-dup]");
   assert.ok(box);
   box.click();
