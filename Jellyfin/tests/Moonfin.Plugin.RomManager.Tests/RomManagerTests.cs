@@ -301,6 +301,56 @@ public class RomManagerRouteTests
     }
 
     [Fact]
+    public async Task LaunchLooseRom_UsesThePathAsTheFileAndKeepsTheJoinForAFolderNamedLikeAFile()
+    {
+        var temp = Directory.CreateDirectory(Path.Combine(Path.GetTempPath(), "moonfin-launch-loose-" + Guid.NewGuid().ToString("N")));
+        try
+        {
+            var romRoot = Path.Combine(temp.FullName, "roms");
+            var loose = Path.Combine(romRoot, "WonderSwan", "Golden Axe (Japan).7z");
+            Directory.CreateDirectory(Path.GetDirectoryName(loose)!);
+            File.WriteAllBytes(loose, [1, 2, 3, 4]);
+            var folderRom = Path.Combine(romRoot, "WonderSwan", "Klonoa (Japan).7z", "Klonoa (Japan).7z");
+            Directory.CreateDirectory(Path.GetDirectoryName(folderRom)!);
+            File.WriteAllBytes(folderRom, [5, 6, 7, 8]);
+
+            var library = DispatchProxy.Create<ILibraryManager, FolderLibrary>();
+            ((FolderLibrary)(object)library).Folders.Add(new VirtualFolderInfo
+            {
+                Name = "Retro Games",
+                ItemId = "retro-games",
+                Locations = new[] { romRoot },
+            });
+            var games = new GamesService(library);
+            var plugins = Directory.CreateDirectory(Path.Combine(temp.FullName, "plugins"));
+            Directory.CreateDirectory(Path.Combine(plugins.FullName, "rom-manager"));
+            var registry = new MoonfinPluginRegistry(new MoonbaseModuleCatalog(), plugins.FullName);
+            registry.WriteConfig("rom-manager", JsonSerializer.Serialize(new Dictionary<string, string> { ["romRoot"] = romRoot }));
+            var services = new ServiceCollection();
+            services.AddSingleton(registry);
+            services.AddSingleton(games);
+            var provider = services.BuildServiceProvider();
+            const string index = """{"items":[{"p":"WonderSwan/Golden Axe (Japan).7z","s":"WonderSwan","t":"Golden Axe","f":"Golden Axe (Japan).7z","z":4,"m":1,"mg":0,"loose":1},{"p":"WonderSwan/Klonoa (Japan).7z","s":"WonderSwan","t":"Klonoa","f":"Klonoa (Japan).7z","z":4,"m":1,"mg":0}]}""";
+            var module = Module(_ => Text(HttpStatusCode.OK, index));
+
+            var body = await Json(module.Launch(Req("""{"key":"p:WonderSwan/Golden Axe (Japan).7z","p":"WonderSwan/Golden Axe (Japan).7z"}""", admin: false, services: provider)));
+            Assert.True(body.GetProperty("ok").GetBoolean());
+            Assert.Equal("retro-games", body.GetProperty("libraryId").GetString());
+            Assert.Equal("Golden Axe (Japan).7z", body.GetProperty("fileName").GetString());
+            Assert.Equal(Path.GetFullPath(loose), DecodeToken(body.GetProperty("gameId").GetString()!));
+            Assert.NotEqual("No game library covers this ROM.", body.TryGetProperty("reason", out var reason) && reason.ValueKind == JsonValueKind.String ? reason.GetString() : null);
+
+            var folder = await Json(module.Launch(Req("""{"key":"p:WonderSwan/Klonoa (Japan).7z","p":"WonderSwan/Klonoa (Japan).7z"}""", admin: false, services: provider)));
+            Assert.True(folder.GetProperty("ok").GetBoolean());
+            Assert.Equal(Path.GetFullPath(folderRom), DecodeToken(folder.GetProperty("gameId").GetString()!));
+        }
+        finally
+        {
+            Directory.Delete(temp.FullName, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task LaunchArcadeBios_PassesNeogeoZipAndRejectsAMissingBios()
     {
         var temp = Directory.CreateDirectory(Path.Combine(Path.GetTempPath(), "moonfin-launch-bios-" + Guid.NewGuid().ToString("N")));

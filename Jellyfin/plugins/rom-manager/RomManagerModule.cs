@@ -255,7 +255,10 @@ public sealed class RomManagerModule : IMoonbaseModule
         }
 
         var romRoot = RomRoot(request.Services);
-        var absolute = Path.Combine(romRoot, path.Replace('/', Path.DirectorySeparatorChar), fileName);
+        // A loose entry's path already names the ROM file (System/Game.7z); a game folder's
+        // path is a directory that holds the file. A directory named like the file keeps the join.
+        var entryPath = Path.Combine(romRoot, path.Replace('/', Path.DirectorySeparatorChar));
+        var absolute = IsContained(romRoot, entryPath) && File.Exists(entryPath) ? entryPath : Path.Combine(entryPath, fileName);
         if (!IsContained(romRoot, absolute))
         {
             return Fail("invalid path");
