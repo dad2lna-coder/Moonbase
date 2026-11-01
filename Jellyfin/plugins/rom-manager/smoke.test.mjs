@@ -248,6 +248,13 @@ test("every page renders, and restore or a duplicate tick does not leave the pag
   assert.match(browse, /2 Versions/);
   assert.match(browse, /Chrono Trigger/);
   assert.equal(document.querySelectorAll("#main [data-sort] option").length, 4);
+  assert.equal(document.querySelector("#main .console[data-console='NES'] .console-name").textContent, "NES");
+  for (let i = 0; i < 80 && !document.querySelector("#main .console[data-console='SNES'] .console-cover img"); i++) {
+    await new Promise((resolve) => setTimeout(resolve, 15));
+  }
+  assert.ok(document.querySelector("#main .console[data-console='SNES'] .console-cover img"), "SNES card shows its own box art");
+  assert.equal(document.querySelector("#main .console[data-console='NES'] .console-cover"), null);
+  assert.equal(document.querySelectorAll("#main [data-cover]").length, 1, "console art does not join the grid cover queue");
   const tiles = Array.from(document.querySelectorAll("#main .console"));
   tiles[0].focus();
   document.dispatchEvent(new window.KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true, cancelable: true }));

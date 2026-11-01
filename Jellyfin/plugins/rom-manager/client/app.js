@@ -22,7 +22,11 @@
     coverQueue: [],
     coverTimer: 0,
     coverBusy: false,
-    observer: null
+    observer: null,
+    consoleArt: {},
+    artQueue: [],
+    artBusy: false,
+    artObserver: null
   };
 
   var NAV = [
@@ -50,32 +54,73 @@
   };
   var GENERIC_ICON = "M7 6h10a3 3 0 0 1 3 3v2a2 2 0 0 1-2 2h-1v2H7v-2H6a2 2 0 0 1-2-2V9a3 3 0 0 1 3-3zM8 8h2M14 8h2";
   var GAMEPAD_ICON = "M6 9h12a3 3 0 0 1 3 3v2a3 3 0 0 1-3 3H6a3 3 0 0 1-3-3v-2a3 3 0 0 1 3-3zM8 13v3M6.5 14.5h3M16 14h.01M18 16h.01";
+  // Brand-ish gradient per console: top colour, bottom colour, glow colour.
   var CONSOLE_COLORS = {
-    nes: "#e23d3d,#7a1818",
-    famicom: "#e23d3d,#7a1818",
-    snes: "#7a5cff,#2a1868",
-    supernintendo: "#7a5cff,#2a1868",
-    superfamicom: "#7a5cff,#2a1868",
-    genesis: "#2f7bff,#102a55",
-    megadrive: "#2f7bff,#102a55",
-    segagenesis: "#2f7bff,#102a55",
-    gb: "#7dba4a,#214016",
-    gbc: "#7dba4a,#214016",
-    gameboy: "#7dba4a,#214016",
-    gba: "#8d5cc2,#31184a",
-    gameboyadvance: "#8d5cc2,#31184a",
-    n64: "#e0b03a,#5a3d08",
-    nintendo64: "#e0b03a,#5a3d08",
-    psx: "#4c8dff,#16306e",
-    playstation: "#4c8dff,#16306e",
-    psp: "#5c6778,#1b222c",
-    dreamcast: "#ff7a18,#16325c",
-    dc: "#ff7a18,#16325c",
-    segadreamcast: "#ff7a18,#16325c",
-    arcade: "#ff5a36,#6d1c0c",
-    mame: "#ff5a36,#6d1c0c",
-    nds: "#c5d0dc,#3c4854",
-    nintendods: "#c5d0dc,#3c4854"
+    nes: "#d8373a,#3b0c12,#ff5a5f",
+    snes: "#6f58e8,#1c1250,#9d8bff",
+    n64: "#1f8f4e,#0b2a4a,#ffcc33",
+    gamecube: "#6a4cc9,#160f3c,#a58bff",
+    wii: "#8fa2b8,#1d2633,#d8e6f5",
+    gb: "#8bac0f,#1d3511,#c4e24a",
+    gbc: "#7b3fc4,#22113f,#c084fc",
+    gba: "#5b3fb8,#170f3d,#a78bfa",
+    nds: "#a9b6c6,#262f3c,#e2ecf7",
+    n3ds: "#d4343a,#3a0c10,#ff6b70",
+    virtualboy: "#d11c1c,#1a0303,#ff4040",
+    pokemini: "#e2c33a,#3a2e08,#ffe066",
+    genesis: "#2c2c34,#0a0a0f,#e8343a",
+    mastersystem: "#c62828,#1a1a1f,#ff5252",
+    gamegear: "#2f3540,#0b1020,#3d8bff",
+    segacd: "#2c6fd6,#0b1a3a,#7fb2ff",
+    sega32x: "#d4a017,#2a1c03,#ffd24a",
+    saturn: "#4b5d82,#0f1526,#9fb4e0",
+    dreamcast: "#f26b1d,#132a52,#ff9a4d",
+    psx: "#3b6fd8,#0b1840,#7ea6ff",
+    ps2: "#1f4fd1,#050f33,#4f8cff",
+    psp: "#4a5568,#0d1117,#a0aec0",
+    arcade: "#ff4d2e,#3a0a3f,#ffb02e",
+    neogeo: "#c9a227,#141414,#ffd84a",
+    colecovision: "#e2862b,#1c1208,#ffae55",
+    intellivision: "#b38a4f,#21170a,#e5c389",
+    atari2600: "#c8742c,#24140a,#ffa45c",
+    atari5200: "#5d6b7a,#12161c,#9fb0c2",
+    atari7800: "#9b2c2c,#1d0a0a,#e05a5a",
+    lynx: "#e07b24,#21120a,#ffa552",
+    jaguar: "#c41e1e,#140404,#ff4b4b",
+    pcengine: "#ff6a00,#1a1209,#ff9a40",
+    turbografx16: "#ff6a00,#1a1209,#ff9a40",
+    wonderswan: "#3a8ad8,#0b1c33,#7cc0ff",
+    ngp: "#2d7d9a,#0b2229,#6cc8e8",
+    msx: "#2f62c9,#0a1430,#76a1ff",
+    zxspectrum: "#d6272d,#111111,#ffd23f",
+    c64: "#7a6ec8,#221d48,#b5abff",
+    amiga: "#d35c2a,#1a0e08,#ff8c55",
+    channelf: "#b57a3c,#1e1309,#e8ad6c",
+    vectrex: "#3fbf6f,#06180d,#7dffb0",
+    threedo: "#c9a227,#191307,#ffd84a",
+    dos: "#4a6b8a,#0b141d,#8fb7dc"
+  };
+  var CONSOLE_ALIASES = {
+    famicom: "nes", nintendo: "nes", nintendoentertainmentsystem: "nes",
+    supernintendo: "snes", superfamicom: "snes", supernes: "snes", sfc: "snes",
+    nintendo64: "n64", gc: "gamecube", ngc: "gamecube", nintendogamecube: "gamecube",
+    gameboy: "gb", gameboycolor: "gbc", gameboyadvance: "gba",
+    nintendods: "nds", ds: "nds", "3ds": "n3ds", nintendo3ds: "n3ds",
+    megadrive: "genesis", segagenesis: "genesis", segamegadrive: "genesis", md: "genesis",
+    sms: "mastersystem", segamastersystem: "mastersystem", gg: "gamegear", segagamegear: "gamegear",
+    megacd: "segacd", "32x": "sega32x", segasaturn: "saturn",
+    dc: "dreamcast", segadreamcast: "dreamcast",
+    playstation: "psx", ps1: "psx", ps: "psx", sonyplaystation: "psx",
+    playstation2: "ps2", playstationportable: "psp",
+    mame: "arcade", fbneo: "arcade", fba: "arcade", cps1: "arcade", cps2: "arcade", cps3: "arcade",
+    neogeoaes: "neogeo", neogeomvs: "neogeo", neogeocd: "neogeo",
+    coleco: "colecovision", atari: "atari2600", a2600: "atari2600", a7800: "atari7800",
+    atarilynx: "lynx", atarijaguar: "jaguar",
+    pce: "pcengine", tg16: "turbografx16", turbografx: "turbografx16",
+    ws: "wonderswan", wsc: "wonderswan", wonderswancolor: "wonderswan",
+    neogeopocket: "ngp", neogeopocketcolor: "ngp", ngpc: "ngp",
+    zx: "zxspectrum", spectrum: "zxspectrum", commodore64: "c64",
+    fairchildchannelf: "channelf", "3do": "threedo", msdos: "dos", pc: "dos"
   };
 
   function platformIcon(system) {
@@ -94,7 +139,20 @@
       gameboy: "gb",
       gameboycolor: "gb",
       gameboyadvance: "gba",
-      mame: "arcade"
+      mame: "arcade",
+      fbneo: "arcade",
+      neogeo: "arcade",
+      ps1: "psx",
+      ps2: "psx",
+      playstation2: "psx",
+      mastersystem: "genesis",
+      sms: "genesis",
+      gamegear: "gba",
+      gg: "gba",
+      gbc: "gb",
+      nds: "gba",
+      colecovision: "snes",
+      gamecube: "n64"
     };
     var icon = el("span", { class: "plat", "aria-hidden": "true" });
     icon.appendChild(svg(PLATFORM_ICONS[aliases[key] || key] || GENERIC_ICON));
@@ -404,9 +462,33 @@
     return String(system || "").toLowerCase().replace(/[^a-z0-9]/g, "");
   }
 
+  function consoleColors(system) {
+    var key = consoleKey(system);
+    var pair = (CONSOLE_COLORS[CONSOLE_ALIASES[key] || key] || "#2a5fae,#0b1a33,#6ea8ff").split(",");
+    return { top: pair[0], bottom: pair[1], glow: pair[2] || pair[0] };
+  }
+
   function consoleGradient(system) {
-    var pair = (CONSOLE_COLORS[consoleKey(system)] || "#1d4e89,#101e30").split(",");
-    return "linear-gradient(165deg, " + pair[0] + ", " + pair[1] + ")";
+    var c = consoleColors(system);
+    return "radial-gradient(120% 70% at 50% 0%, " + c.top + " 0%, transparent 70%), linear-gradient(170deg, " + c.top + " 0%, " + c.bottom + " 78%)";
+  }
+
+  function consoleBadge(system, cls) {
+    var badge = el("span", { class: cls || "console-badge", "aria-hidden": "true" });
+    badge.style.background = consoleGradient(system);
+    badge.style.setProperty("--glow", consoleColors(system).glow);
+    badge.appendChild(platformIcon(system).firstChild);
+    return badge;
+  }
+
+  // A size factor for the console name, in container-inline units, so the full
+  // name fits the card without truncating. Long names wrap on spaces first.
+  function nameFit(name) {
+    var text = String(name || "ROM");
+    var words = text.split(/[\s]+/).filter(Boolean);
+    var longest = words.reduce(function (n, w) { return Math.max(n, w.length); }, 1);
+    var len = text.length <= 11 ? text.length : longest;
+    return Math.max(6, Math.min(30, 150 / Math.max(len, 1)));
   }
 
   function gamesLabel(count) {
@@ -515,9 +597,14 @@
     var rowInfo = consoleRow(system);
     main.appendChild(browseHead());
     main.appendChild(consoleCarousel(system));
+    watchConsoleArt(main);
     var sub = el("div", { class: "library-sub" });
-    sub.appendChild(el("h2", { text: system || "Library" }));
-    sub.appendChild(el("span", { class: "tiny", text: gamesLabel(rowInfo ? rowInfo.games : state.total) }));
+    if (system) sub.appendChild(consoleBadge(system, "console-badge"));
+    var subTitle = el("h2");
+    subTitle.appendChild(el("span", { class: "sub-name", text: system || "Library" }));
+    subTitle.appendChild(el("span", { class: "sub-sep", "aria-hidden": "true", text: "|" }));
+    subTitle.appendChild(el("span", { class: "sub-count", text: gamesLabel(rowInfo ? rowInfo.games : state.total) }));
+    sub.appendChild(subTitle);
     main.appendChild(sub);
     main.appendChild(libraryTools());
     if (!state.systems.length) {
@@ -557,47 +644,162 @@
         "aria-pressed": selected ? "true" : "false",
         "aria-label": (entry.system || "Console") + ", " + gamesLabel(entry.games)
       });
+      var colors = consoleColors(entry.system);
       var face = el("span", { class: "console-face" });
       face.style.background = consoleGradient(entry.system);
+      face.style.setProperty("--glow", colors.glow);
+      var fan = el("span", { class: "console-fan", "aria-hidden": "true" });
+      face.appendChild(fan);
       if (entry.logoUrl) {
-        face.appendChild(el("img", { alt: "", src: entry.logoUrl }));
+        face.appendChild(el("img", { class: "console-logo-img", alt: "", src: entry.logoUrl }));
       }
-      face.appendChild(el("b", { text: entry.system || "ROM" }));
+      face.appendChild(el("span", { class: "console-gloss", "aria-hidden": "true" }));
+      var logo = el("span", { class: "console-logo" });
+      logo.appendChild(consoleBadge(entry.system, "console-glyph"));
+      var name = el("b", { class: "console-name", text: entry.system || "ROM" });
+      name.style.setProperty("--fit", String(nameFit(entry.system)));
+      logo.appendChild(name);
+      face.appendChild(logo);
       tile.appendChild(face);
-      tile.appendChild(el("span", { class: "tiny", text: gamesLabel(entry.games) }));
+      tile.appendChild(el("span", { class: "tiny console-count", text: gamesLabel(entry.games) }));
       scroller.appendChild(tile);
+      paintConsoleArt(tile, entry.system);
     });
     row.appendChild(scroller);
     row.appendChild(el("button", { type: "button", class: "console-arrow", "data-console-nav": "next", "aria-label": "Next consoles", text: "›" }));
     return row;
   }
 
+  // Console artwork is a fan of up to four box-art covers from that console's own
+  // games, fetched once per system through the existing games and covers routes
+  // and kept for the session. Nothing is downloaded from outside the library.
+  function paintConsoleArt(tile, system) {
+    var art = state.consoleArt[system];
+    var fan = tile && tile.querySelector(".console-fan");
+    if (!fan || !art || !art.uris) return;
+    var uris = art.uris.slice(0, 4);
+    fan.replaceChildren();
+    fan.setAttribute("data-count", String(uris.length));
+    uris.forEach(function (uri, index) {
+      var cover = el("span", { class: "console-cover c" + index });
+      cover.appendChild(el("img", { alt: "", src: uri }));
+      fan.appendChild(cover);
+    });
+    tile.classList.toggle("has-art", uris.length > 0);
+  }
+
+  function watchConsoleArt(root) {
+    if (state.artObserver) {
+      state.artObserver.disconnect();
+      state.artObserver = null;
+    }
+    var tiles = Array.prototype.slice.call(root.querySelectorAll(".console[data-console]"));
+    var want = tiles.filter(function (tile) { return !state.consoleArt[tile.getAttribute("data-console")]; });
+    if (!want.length) return;
+    if (typeof IntersectionObserver !== "function") {
+      want.forEach(function (tile) { queueConsoleArt(tile.getAttribute("data-console")); });
+      return;
+    }
+    state.artObserver = new IntersectionObserver(function (entries) {
+      entries.forEach(function (entry) {
+        if (!entry.isIntersecting) return;
+        if (state.artObserver) state.artObserver.unobserve(entry.target);
+        queueConsoleArt(entry.target.getAttribute("data-console"));
+      });
+    }, { rootMargin: "120px 240px" });
+    want.forEach(function (tile) { state.artObserver.observe(tile); });
+  }
+
+  function queueConsoleArt(system) {
+    if (!system || state.consoleArt[system] || state.artQueue.indexOf(system) >= 0) return;
+    state.artQueue.push(system);
+    pumpConsoleArt();
+  }
+
+  function pickSpread(items, count) {
+    if (items.length <= count) return items.slice();
+    var out = [];
+    for (var i = 0; i < count; i++) out.push(items[Math.floor((i * items.length) / count)]);
+    return out;
+  }
+
+  async function pumpConsoleArt() {
+    if (state.artBusy) return;
+    state.artBusy = true;
+    try {
+      while (state.artQueue.length && state.route.name === "library") {
+        var system = state.artQueue.shift();
+        if (state.consoleArt[system]) continue;
+        state.consoleArt[system] = { pending: true };
+        var uris = [];
+        try {
+          var list = await api("games", { system: system, sort: "title", offset: 0, limit: 40 });
+          var withCover = ((list && list.items) || []).filter(function (item) { return item && item.cover && item.coverPath; });
+          var picks = pickSpread(withCover, 4);
+          if (picks.length) {
+            var result = await api("covers", {
+              items: picks.map(function (item) { return { p: item.coverPath, lb: item.lb || "", w: 200 }; })
+            });
+            var covers = (result && result.covers) || {};
+            picks.forEach(function (item) { if (covers[item.coverPath]) uris.push(covers[item.coverPath]); });
+          }
+          state.consoleArt[system] = { uris: uris };
+        } catch (e) {
+          /* No art: the card keeps its gradient, glyph and name. Try again next visit. */
+          delete state.consoleArt[system];
+          continue;
+        }
+        document.querySelectorAll('#main .console[data-console="' + cssEscape(system) + '"]').forEach(function (tile) {
+          paintConsoleArt(tile, system);
+        });
+      }
+    } finally {
+      state.artBusy = false;
+    }
+  }
+
+  var FILTER_ICON = "M4 6h16M7 12h10M10 18h4";
+  var CHEVRON_ICON = "M6 9l6 6 6-6";
+
   function libraryTools() {
-    var tools = el("div", { class: "filters" });
+    var tools = el("div", { class: "filters lib-tools" });
+    var seg = el("div", { class: "seg", role: "group", "aria-label": "Show" });
     [["all", "All Games"], ["favorites", "Favorites"], ["recent", "Recently Played"]].forEach(function (pair) {
-      tools.appendChild(el("button", {
+      seg.appendChild(el("button", {
         type: "button",
         class: "chip" + (state.libraryView === pair[0] ? " active" : ""),
         "data-nav": "1",
         "data-lib-view": pair[0],
+        "aria-pressed": state.libraryView === pair[0] ? "true" : "false",
         text: pair[1]
       }));
     });
+    tools.appendChild(seg);
+    var right = el("div", { class: "tools-right" });
+    var wrap = el("label", { class: "sort-wrap" });
+    wrap.appendChild(el("span", { class: "sort-label", text: "Sort:" }));
     var sort = el("select", { class: "sort", "data-sort": "1", "aria-label": "Sort" });
     [["title", "Title A–Z"], ["title-desc", "Title Z–A"], ["added", "Recently Added"], ["size", "Size"]].forEach(function (pair) {
       var option = el("option", { value: pair[0], text: pair[1] });
       if (pair[0] === state.sort) option.setAttribute("selected", "selected");
       sort.appendChild(option);
     });
-    tools.appendChild(sort);
-    tools.appendChild(el("button", {
+    wrap.appendChild(sort);
+    var chev = svg(CHEVRON_ICON);
+    chev.classList.add("sort-chev");
+    wrap.appendChild(chev);
+    right.appendChild(wrap);
+    var filter = el("button", {
       type: "button",
-      class: "icon-btn filter-btn",
+      class: "icon-btn filter-btn" + (state.query ? " on" : ""),
       "data-nav": "1",
       "data-filter": "1",
       "aria-label": "Filter",
-      text: "Filter"
-    }));
+      title: "Filter"
+    });
+    filter.appendChild(svg(FILTER_ICON));
+    right.appendChild(filter);
+    tools.appendChild(right);
     return tools;
   }
 
@@ -982,6 +1184,10 @@
     if (state.observer) {
       state.observer.disconnect();
       state.observer = null;
+    }
+    if (state.artObserver) {
+      state.artObserver.disconnect();
+      state.artObserver = null;
     }
     updateNav();
     var main = document.getElementById("main");
@@ -1656,7 +1862,14 @@
     state.collections = Array.isArray(values[2]) ? values[2].filter(function (item) { return item && item.name; }) : [];
   }
 
+  function markEmbedded() {
+    var framed = false;
+    try { framed = window.self !== window.top; } catch (e) { framed = true; }
+    if (framed) document.documentElement.classList.add("embedded");
+  }
+
   async function boot() {
+    markEmbedded();
     buildNav();
     tickClock();
     setInterval(tickClock, 30000);
