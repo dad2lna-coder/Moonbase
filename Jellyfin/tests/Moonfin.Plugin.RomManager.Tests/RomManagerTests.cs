@@ -163,6 +163,167 @@ public class RomCheatTagTests
     }
 }
 
+public class RomDeveloperTests
+{
+    [Theory]
+    [InlineData("SEGA", "Sega")]
+    [InlineData("Sega ???", "Sega")]
+    [InlineData("Sega Enterprises", "Sega")]
+    [InlineData("Sega Enterprises, Ltd.", "Sega")]
+    [InlineData("Sega AM2", "Sega")]
+    [InlineData("Sega Technical Institute", "Sega")]
+    [InlineData("capcom co., ltd.", "Capcom")]
+    [InlineData("Konami Industry", "Konami")]
+    [InlineData("Namcot", "Namco")]
+    [InlineData("SNK Playmore", "SNK")]
+    [InlineData("Data East Corporation", "Data East")]
+    [InlineData("Technos Japan Corp.", "Technōs Japan")]
+    [InlineData("Technōs Japan", "Technōs Japan")]
+    [InlineData("Tehkan", "Tecmo")]
+    [InlineData("ToaPlan", "Toaplan")]
+    [InlineData("Alpha Denshi Kōgyō", "ADK")]
+    [InlineData("Nihon Bussan", "Nichibutsu")]
+    [InlineData("Sun Electronics", "Sunsoft")]
+    [InlineData("Midway Manufacturing", "Midway")]
+    [InlineData("Bally Midway Manufacturing", "Midway")]
+    [InlineData("Nintendo R&D1", "Nintendo")]
+    [InlineData("Nintendo R&D?", "Nintendo")]
+    [InlineData("Hudson", "Hudson Soft")]
+    [InlineData("International Games System", "IGS")]
+    public void MergesClearlyIdenticalCompanies(string raw, string expected)
+    {
+        var dev = RomDevelopers.Normalize(raw);
+        Assert.NotNull(dev);
+        Assert.Equal(expected, dev!.Name);
+        Assert.Equal(RomDevelopers.Fold(expected), dev.Key);
+    }
+
+    [Theory]
+    [InlineData("Technosoft", "Technōs Japan")]
+    [InlineData("Sega/Gremlin", "Sega")]
+    [InlineData("Segaman Production", "Sega")]
+    [InlineData("Bandai Namco", "Namco")]
+    [InlineData("Atari Games", "Atari")]
+    [InlineData("Gremlin Industries", "Gremlin Graphics")]
+    [InlineData("Taito America", "Taito")]
+    public void KeepsDifferentCompaniesApart(string raw, string other)
+    {
+        Assert.NotEqual(RomDevelopers.Normalize(other)!.Key, RomDevelopers.Normalize(raw)!.Key);
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("  ")]
+    [InlineData("Unknown")]
+    [InlineData("???")]
+    public void BlankAndUnknownAreNotDevelopers(string? raw)
+    {
+        Assert.Null(RomDevelopers.Normalize(raw));
+    }
+
+    [Fact]
+    public void EveryAliasPointsAtItsOwnCanonicalGroup()
+    {
+        foreach (var pair in RomDevelopers.Aliases)
+        {
+            Assert.Equal(pair.Key, RomDevelopers.Fold(pair.Key));
+            var canonical = RomDevelopers.Fold(pair.Value);
+            Assert.True(RomDevelopers.Aliases.TryGetValue(canonical, out var self) && self == pair.Value, pair.Key + " -> " + pair.Value);
+        }
+    }
+
+    [Fact]
+    public void RollupCountsGamesNotRomsAndUsesTheMostCommonSpelling()
+    {
+        var items = RomIndex.Parse("""
+        {"items":[
+          {"p":"Arcade/sf2","s":"Arcade","t":"Street Fighter II","f":"sf2.zip","dev":"Capcom","mg":1,"km":1},
+          {"p":"Arcade/sf2u","s":"Arcade","t":"Street Fighter II","f":"sf2u.zip","dev":"Capcom","mg":1,"km":0},
+          {"p":"SNES/sf2","s":"SNES","t":"Street Fighter II","f":"sf2.sfc","dev":"CAPCOM Co., Ltd.","mg":0},
+          {"p":"Arcade/ofox","s":"Arcade","t":"Outfoxies","f":"outfxies.zip","dev":"Namco ???","mg":0},
+          {"p":"Genesis/x","s":"Genesis","t":"X","f":"x.md","dev":"Some Studio","mg":0},
+          {"p":"Genesis/y","s":"Genesis","t":"Y","f":"y.md","dev":"Some studio","mg":0},
+          {"p":"Genesis/z","s":"Genesis","t":"Z","f":"z.md","dev":"Some Studio","mg":0},
+          {"p":"Genesis/u","s":"Genesis","t":"U","f":"u.md","dev":"","mg":0}
+        ]}
+        """, out _);
+        var rows = RomDevelopers.Rollup(RomIndex.Group(items));
+        var capcom = Assert.Single(rows, row => row.Name == "Capcom");
+        Assert.Equal(2, capcom.Games);
+        Assert.Equal(3, capcom.Roms);
+        var studio = Assert.Single(rows, row => row.Key == "somestudio");
+        Assert.Equal("Some Studio", studio.Name);
+        Assert.Equal(3, studio.Games);
+        Assert.Equal("Namco", Assert.Single(rows, row => row.Key == "namco").Name);
+        Assert.Equal(3, rows.Count);
+        Assert.Equal("somestudio", rows[0].Key);
+    }
+}
+
+public class RomLogoTests
+{
+    [Theory]
+    [InlineData("../consoles/SNES")]
+    [InlineData("..")]
+    [InlineData("SNES/../../etc/passwd")]
+    [InlineData("/etc/passwd")]
+    [InlineData("..\\x")]
+    [InlineData("C:x")]
+    [InlineData(".hidden")]
+    [InlineData("")]
+    [InlineData("a\u0000b")]
+    public void RejectsUnsafeNames(string name)
+    {
+        Assert.False(RomLogos.IsSafeName(name));
+    }
+
+    [Theory]
+    [InlineData("SNES")]
+    [InlineData("Master System")]
+    [InlineData("Data East")]
+    [InlineData("Technōs Japan")]
+    [InlineData("Sega/Gremlin")]
+    public void AcceptsOrdinaryNames(string name)
+    {
+        Assert.Equal(!name.Contains('/'), RomLogos.IsSafeName(name));
+    }
+
+    [Fact]
+    public void LoadsOnlyRealImagesFromTheKindFolder()
+    {
+        var temp = Directory.CreateDirectory(Path.Combine(Path.GetTempPath(), "moonfin-logos-" + Guid.NewGuid().ToString("N")));
+        try
+        {
+            var consoles = Directory.CreateDirectory(Path.Combine(temp.FullName, ".logos", "consoles")).FullName;
+            var developers = Directory.CreateDirectory(Path.Combine(temp.FullName, ".logos", "developers")).FullName;
+            File.WriteAllText(Path.Combine(consoles, "Master System.svg"), "<svg xmlns=\"http://www.w3.org/2000/svg\"/>");
+            File.WriteAllText(Path.Combine(consoles, "SNES.svg"), "<svg xmlns=\"http://www.w3.org/2000/svg\"/>");
+            File.WriteAllBytes(Path.Combine(consoles, "SNES.png"), [0x89, (byte)'P', (byte)'N', (byte)'G', 13, 10, 26, 10, 0]);
+            File.WriteAllText(Path.Combine(consoles, "Fake.svg"), "not an image");
+            File.WriteAllText(Path.Combine(temp.FullName, "secret.svg"), "<svg xmlns=\"http://www.w3.org/2000/svg\"/>");
+            File.WriteAllText(Path.Combine(developers, "Data East.svg"), "<svg xmlns=\"http://www.w3.org/2000/svg\"/>");
+
+            var found = RomLogos.Load(temp.FullName, "consoles", new[] { "Master System", "mastersystem", "SNES", "Fake", "../secret", "../../secret", "secret", "Missing" });
+            Assert.StartsWith("data:image/svg+xml;base64,", found["Master System"]);
+            Assert.StartsWith("data:image/svg+xml;base64,", found["mastersystem"]);
+            Assert.StartsWith("data:image/png;base64,", found["SNES"]);
+            Assert.False(found.ContainsKey("Fake"));
+            Assert.False(found.ContainsKey("../secret"));
+            Assert.False(found.ContainsKey("../../secret"));
+            Assert.False(found.ContainsKey("secret"));
+            Assert.False(found.ContainsKey("Missing"));
+            Assert.Empty(RomLogos.Load(temp.FullName, "../consoles", new[] { "SNES" }));
+            Assert.Empty(RomLogos.Load(temp.FullName, "developers", new[] { "SNES" }));
+            Assert.Single(RomLogos.Load(temp.FullName, "developers", new[] { "Data East" }));
+        }
+        finally
+        {
+            Directory.Delete(temp.FullName, recursive: true);
+        }
+    }
+}
+
 public class RomManagerRouteTests
 {
     [Fact]
@@ -191,6 +352,72 @@ public class RomManagerRouteTests
         var capped = await Json(many.Games(Req("""{"limit":100}""")));
         Assert.Equal(70, capped.GetProperty("total").GetInt32());
         Assert.Equal(60, capped.GetProperty("items").GetArrayLength());
+    }
+
+    [Fact]
+    public async Task DevelopersRouteCountsGamesAndGamesRouteFiltersByDeveloper()
+    {
+        var module = Module(Library());
+        var devs = await Json(module.Developers(Req("{}")));
+        Assert.True(devs.GetProperty("ok").GetBoolean());
+        var list = devs.GetProperty("developers").EnumerateArray().ToList();
+        Assert.Equal(new[] { "Nintendo", "Square", "Sonic Team" }, list.Select(row => row.GetProperty("name").GetString()).ToArray());
+        var squareRow = list[1];
+        Assert.Equal(2, squareRow.GetProperty("games").GetInt32());
+        Assert.Equal(3, squareRow.GetProperty("roms").GetInt32());
+        Assert.Contains(list, row => row.GetProperty("name").GetString() == "Nintendo" && row.GetProperty("games").GetInt32() == 2);
+        Assert.Equal(3, devs.GetProperty("total").GetInt32());
+
+        var top = await Json(module.Developers(Req("""{"min":2}""")));
+        Assert.Equal(2, top.GetProperty("developers").GetArrayLength());
+
+        var square = await Json(module.Games(Req("""{"developer":"square","sort":"title-desc"}""")));
+        Assert.Equal(2, square.GetProperty("total").GetInt32());
+        Assert.Equal(new[] { "Secret of Mana", "Chrono Trigger" }, square.GetProperty("items").EnumerateArray().Select(item => item.GetProperty("title").GetString()).ToArray());
+        Assert.All(square.GetProperty("items").EnumerateArray(), item => Assert.Equal("Square", item.GetProperty("developer").GetString()));
+        var squareSnes = await Json(module.Games(Req("""{"developer":"Square","q":"mana"}""")));
+        Assert.Equal(1, squareSnes.GetProperty("total").GetInt32());
+        var none = await Json(module.Games(Req("""{"developer":"Nobody"}""")));
+        Assert.Equal(0, none.GetProperty("total").GetInt32());
+    }
+
+    [Fact]
+    public async Task LogosRouteServesDataUrisAndRejectsTraversal()
+    {
+        var temp = Directory.CreateDirectory(Path.Combine(Path.GetTempPath(), "moonfin-logo-route-" + Guid.NewGuid().ToString("N")));
+        try
+        {
+            var romRoot = Path.Combine(temp.FullName, "roms");
+            var consoles = Directory.CreateDirectory(Path.Combine(romRoot, ".logos", "consoles")).FullName;
+            File.WriteAllText(Path.Combine(consoles, "SNES.svg"), "<svg xmlns=\"http://www.w3.org/2000/svg\"/>");
+            File.WriteAllText(Path.Combine(romRoot, "passwd.svg"), "<svg xmlns=\"http://www.w3.org/2000/svg\"/>");
+            var plugins = Directory.CreateDirectory(Path.Combine(temp.FullName, "plugins"));
+            Directory.CreateDirectory(Path.Combine(plugins.FullName, "rom-manager"));
+            var registry = new MoonfinPluginRegistry(new MoonbaseModuleCatalog(), plugins.FullName);
+            registry.WriteConfig("rom-manager", JsonSerializer.Serialize(new Dictionary<string, string> { ["romRoot"] = romRoot }));
+            var services = new ServiceCollection();
+            services.AddSingleton(registry);
+            var provider = services.BuildServiceProvider();
+            var module = Module(Library());
+
+            var ok = await Json(module.Logos(Req("""{"kind":"consoles","names":["SNES","../passwd","../../roms/passwd","..","NES"]}""", services: provider)));
+            Assert.True(ok.GetProperty("ok").GetBoolean());
+            var logos = ok.GetProperty("logos").EnumerateObject().ToList();
+            var snes = Assert.Single(logos);
+            Assert.Equal("SNES", snes.Name);
+            var uri = snes.Value.GetString()!;
+            Assert.StartsWith("data:image/svg+xml;base64,", uri);
+            Assert.Contains("<svg", Encoding.UTF8.GetString(Convert.FromBase64String(uri["data:image/svg+xml;base64,".Length..])));
+
+            var badKind = await Json(module.Logos(Req("""{"kind":"..","names":["passwd"]}""", services: provider)));
+            Assert.False(badKind.GetProperty("ok").GetBoolean());
+            var upKind = await Json(module.Logos(Req("""{"kind":"../roms","names":["passwd"]}""", services: provider)));
+            Assert.False(upKind.GetProperty("ok").GetBoolean());
+        }
+        finally
+        {
+            Directory.Delete(temp.FullName, recursive: true);
+        }
     }
 
     [Fact]

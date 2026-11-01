@@ -26,7 +26,12 @@
     consoleArt: {},
     artQueue: [],
     artBusy: false,
-    artObserver: null
+    artObserver: null,
+    developers: [],
+    devTotal: 0,
+    allDevelopers: null,
+    logos: { consoles: {}, developers: {} },
+    logoAsked: { consoles: {}, developers: {} }
   };
 
   var NAV = [
@@ -53,6 +58,8 @@
     arcade: "M4 4h16v12H4zM8 20h8M9 16v4M15 16v4"
   };
   var GENERIC_ICON = "M7 6h10a3 3 0 0 1 3 3v2a2 2 0 0 1-2 2h-1v2H7v-2H6a2 2 0 0 1-2-2V9a3 3 0 0 1 3-3zM8 8h2M14 8h2";
+  var DEV_ICON = "M4 21V8l8-5 8 5v13M9 21v-6h6v6M8 11h.01M12 11h.01M16 11h.01";
+  var DEV_MIN_GAMES = 10;
   var GAMEPAD_ICON = "M6 9h12a3 3 0 0 1 3 3v2a3 3 0 0 1-3 3H6a3 3 0 0 1-3-3v-2a3 3 0 0 1 3-3zM8 13v3M6.5 14.5h3M16 14h.01M18 16h.01";
   // Brand-ish gradient per console: top colour, bottom colour, glow colour.
   var CONSOLE_COLORS = {
@@ -301,7 +308,7 @@
   }
 
   function updateNav() {
-    var name = state.route.name === "collection" ? "collections" : state.route.name;
+    var name = state.route.name === "collection" ? "collections" : state.route.name === "developers" ? "platforms" : state.route.name;
     document.querySelectorAll("#side-nav [data-go], #switcher [data-go]").forEach(function (button) {
       button.classList.toggle("active", button.getAttribute("data-go") === name);
     });
@@ -531,7 +538,12 @@
     return list;
   }
 
+  function chosenDeveloper() {
+    return state.route.name === "library" && state.route.developer ? String(state.route.developer) : "";
+  }
+
   function chosenConsole() {
+    if (chosenDeveloper()) return "";
     if (state.route.system) state.consoleName = state.route.system;
     if (!state.consoleName && state.systems[0]) state.consoleName = state.systems[0].system;
     return state.consoleName || "";
@@ -554,13 +566,15 @@
   }
 
   function libraryBody(offset) {
+    var developer = chosenDeveloper();
     var body = {
-      system: state.consoleName || "",
+      system: developer ? "" : (state.consoleName || ""),
       q: state.query || "",
       sort: state.sort || "title",
       offset: offset || 0,
       limit: 48
     };
+    if (developer) body.developer = developer;
     if (state.libraryView === "favorites") body.keys = state.favorites.slice();
     if (state.libraryView === "recent") body.keys = state.recent.slice();
     return body;
@@ -578,7 +592,7 @@
     main.appendChild(browseHead());
     main.appendChild(el("p", { class: "muted", text: "Loading…" }));
     var token = state.token;
-    if (!state.systems.length) {
+    if (!state.systems.length && !chosenDeveloper()) {
       if (token !== state.token) return;
       drawLibrary(main);
       return;
@@ -605,29 +619,39 @@
 
   function drawLibrary(main) {
     clearMain(main);
+    var developer = chosenDeveloper();
     var system = chosenConsole();
     var rowInfo = consoleRow(system);
+    var devInfo = developer ? developerRow(developer) : null;
     main.appendChild(browseHead());
     main.appendChild(consoleCarousel(system));
     watchConsoleArt(main);
-    var sub = el("div", { class: "library-sub" });
-    if (system) sub.appendChild(consoleBadge(system, "console-badge"));
+    if (state.developers.length) {
+      main.appendChild(developerHead());
+      main.appendChild(developerCarousel(developer));
+    }
+    var sub = el("div", { class: "library-sub" + (developer ? " dev-sub" : "") });
+    if (developer) sub.appendChild(logoSlot("developers", devInfo ? devInfo.name : developer, "sub-logo", [devMonogram(devInfo ? devInfo.name : developer)]));
+    else if (system) sub.appendChild(logoSlot("consoles", system, "sub-logo", [consoleBadge(system, "console-badge")]));
     var subTitle = el("h2");
-    subTitle.appendChild(el("span", { class: "sub-name", text: system || "Library" }));
+    subTitle.appendChild(el("span", { class: "sub-name", text: developer ? (devInfo ? devInfo.name : developer) : (system || "Library") }));
     subTitle.appendChild(el("span", { class: "sub-sep", "aria-hidden": "true", text: "|" }));
-    subTitle.appendChild(el("span", { class: "sub-count", text: gamesLabel(rowInfo ? rowInfo.games : state.total) }));
+    var subGames = developer ? (devInfo && !state.query && state.libraryView === "all" ? devInfo.games : state.total) : (rowInfo ? rowInfo.games : state.total);
+    subTitle.appendChild(el("span", { class: "sub-count", text: gamesLabel(subGames) }));
     sub.appendChild(subTitle);
     main.appendChild(sub);
     main.appendChild(libraryTools());
-    if (!state.systems.length) {
+    paintLogos(main);
+    if (!state.systems.length && !developer) {
       main.appendChild(el("div", { class: "empty", text: state.indexing ? "Library is being indexed" : "No platforms yet." }));
       return;
     }
     if (!state.list.length) {
-      var empty = "No games for this console yet.";
+      var scope = developer ? "this developer" : "this console";
+      var empty = "No games for " + scope + " yet.";
       if (state.query) empty = "No games match that search.";
-      else if (state.libraryView === "favorites") empty = "No favorites for this console yet.";
-      else if (state.libraryView === "recent") empty = "No recently played games for this console yet.";
+      else if (state.libraryView === "favorites") empty = "No favorites for " + scope + " yet.";
+      else if (state.libraryView === "recent") empty = "No recently played games for " + scope + " yet.";
       main.appendChild(el("div", { class: "empty", text: empty }));
       return;
     }
@@ -638,8 +662,10 @@
       main.appendChild(el("button", { type: "button", class: "text-btn", "data-nav": "1", "data-more": "1", text: "Load more" }));
     }
     watchCovers(main);
-    var selected = main.querySelector(".console[aria-pressed='true']");
-    if (selected && selected.scrollIntoView) selected.scrollIntoView({ inline: "nearest", block: "nearest" });
+    main.querySelectorAll(".console[aria-pressed='true']").forEach(function (selected) {
+      var scroller = selected.closest(".console-scroll");
+      if (scroller) scroller.scrollLeft = Math.max(0, selected.offsetLeft - scroller.offsetLeft - 16);
+    });
   }
 
   function consoleCarousel(system) {
@@ -662,16 +688,13 @@
       face.style.setProperty("--glow", colors.glow);
       var fan = el("span", { class: "console-fan", "aria-hidden": "true" });
       face.appendChild(fan);
-      if (entry.logoUrl) {
-        face.appendChild(el("img", { class: "console-logo-img", alt: "", src: entry.logoUrl }));
-      }
       face.appendChild(el("span", { class: "console-gloss", "aria-hidden": "true" }));
-      var logo = el("span", { class: "console-logo" });
-      logo.appendChild(consoleBadge(entry.system, "console-glyph"));
+      // The logo is the card's main branding over the cover fan; the styled name is the fallback.
       var name = el("b", { class: "console-name", text: entry.system || "ROM" });
       name.style.setProperty("--fit", String(nameFit(entry.system)));
-      logo.appendChild(name);
-      face.appendChild(logo);
+      var logoUrl = entry.logoUrl || state.logos.consoles[entry.system];
+      face.appendChild(logoSlot("consoles", entry.system, "console-logo", [consoleBadge(entry.system, "console-glyph"), name], logoUrl));
+      if (logoUrl) tile.classList.add("has-logo");
       tile.appendChild(face);
       tile.appendChild(el("span", { class: "tiny console-count", text: gamesLabel(entry.games) }));
       scroller.appendChild(tile);
@@ -680,6 +703,237 @@
     row.appendChild(scroller);
     row.appendChild(el("button", { type: "button", class: "console-arrow", "data-console-nav": "next", "aria-label": "Next consoles", text: "›" }));
     return row;
+  }
+
+  function developerRow(name) {
+    var key = foldName(name);
+    for (var i = 0; i < state.developers.length; i++) {
+      if (foldName(state.developers[i].name) === key || state.developers[i].key === key) return state.developers[i];
+    }
+    var all = state.allDevelopers || [];
+    for (var j = 0; j < all.length; j++) {
+      if (foldName(all[j].name) === key || all[j].key === key) return all[j];
+    }
+    return null;
+  }
+
+  function foldName(value) {
+    var text = String(value || "");
+    if (text.normalize) text = text.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+    return text.toLowerCase().replace(/[^a-z0-9]/g, "");
+  }
+
+  // A steady colour per developer so cards without a logo still look distinct.
+  function devColors(name) {
+    var key = foldName(name);
+    var hash = 0;
+    for (var i = 0; i < key.length; i++) hash = (hash * 31 + key.charCodeAt(i)) >>> 0;
+    var hue = hash % 360;
+    return {
+      top: "hsl(" + hue + ", 58%, 42%)",
+      bottom: "hsl(" + ((hue + 30) % 360) + ", 62%, 11%)",
+      glow: "hsl(" + hue + ", 90%, 68%)"
+    };
+  }
+
+  function devMonogram(name) {
+    var c = devColors(name);
+    var words = String(name || "?").replace(/[^A-Za-z0-9\u00C0-\u024F ]/g, " ").split(/\s+/).filter(Boolean);
+    var letters = words.length > 1 ? words[0].charAt(0) + words[1].charAt(0) : String(words[0] || "?").slice(0, 2);
+    var badge = el("span", { class: "console-badge dev-mono", "aria-hidden": "true", text: letters.toUpperCase() });
+    badge.style.background = "linear-gradient(170deg, " + c.top + ", " + c.bottom + ")";
+    badge.style.setProperty("--glow", c.glow);
+    return badge;
+  }
+
+  function developerHead() {
+    var head = el("div", { class: "page-head browse-head dev-head" });
+    var title = el("h1");
+    title.appendChild(svg(DEV_ICON));
+    title.appendChild(document.createTextNode("Browse by Developer"));
+    head.appendChild(title);
+    head.appendChild(el("button", {
+      type: "button",
+      class: "text-btn see-all",
+      "data-nav": "1",
+      "data-go": "developers",
+      text: "All developers" + (state.devTotal ? " (" + state.devTotal + ")" : "")
+    }));
+    return head;
+  }
+
+  function developerCarousel(selectedName) {
+    var selectedKey = foldName(selectedName);
+    var row = el("div", { class: "console-row dev-row" });
+    row.appendChild(el("button", { type: "button", class: "console-arrow", "data-console-nav": "prev", "aria-label": "Previous developers", text: "‹" }));
+    var scroller = el("div", { class: "console-scroll" });
+    state.developers.forEach(function (entry) {
+      var selected = selectedKey && (foldName(entry.name) === selectedKey || entry.key === selectedKey);
+      scroller.appendChild(developerTile(entry, !!selected));
+    });
+    var more = el("button", { type: "button", class: "console dev-tile see-all-tile", "data-nav": "1", "data-go": "developers", "aria-label": "All developers" });
+    var moreFace = el("span", { class: "console-face dev-face" });
+    moreFace.appendChild(el("span", { class: "console-gloss", "aria-hidden": "true" }));
+    var moreLabel = el("span", { class: "console-logo" });
+    moreLabel.appendChild(el("b", { class: "console-name", text: "See all" }));
+    moreFace.appendChild(moreLabel);
+    more.appendChild(moreFace);
+    more.appendChild(el("span", { class: "tiny console-count", text: state.devTotal ? state.devTotal + " developers" : "Developers" }));
+    scroller.appendChild(more);
+    row.appendChild(scroller);
+    row.appendChild(el("button", { type: "button", class: "console-arrow", "data-console-nav": "next", "aria-label": "Next developers", text: "›" }));
+    return row;
+  }
+
+  function developerTile(entry, selected) {
+    var tile = el("button", {
+      type: "button",
+      class: "console dev-tile" + (selected ? " selected" : ""),
+      "data-nav": "1",
+      "data-developer": entry.name,
+      "aria-pressed": selected ? "true" : "false",
+      "aria-label": entry.name + ", " + gamesLabel(entry.games)
+    });
+    var c = devColors(entry.name);
+    var face = el("span", { class: "console-face dev-face" });
+    face.style.background = "radial-gradient(120% 70% at 50% 0%, " + c.top + " 0%, transparent 70%), linear-gradient(170deg, " + c.top + " 0%, " + c.bottom + " 78%)";
+    face.style.setProperty("--glow", c.glow);
+    face.appendChild(el("span", { class: "console-gloss", "aria-hidden": "true" }));
+    var name = el("b", { class: "console-name", text: entry.name });
+    name.style.setProperty("--fit", String(nameFit(entry.name)));
+    var url = state.logos.developers[entry.name];
+    face.appendChild(logoSlot("developers", entry.name, "console-logo", [name], url));
+    if (url) tile.classList.add("has-logo");
+    tile.appendChild(face);
+    tile.appendChild(el("span", { class: "tiny console-count", text: gamesLabel(entry.games) }));
+    return tile;
+  }
+
+  // A slot that shows a logo image when one is known for kind/name and the given
+  // fallback nodes otherwise. paintLogos fills slots once a logo arrives.
+  function logoSlot(kind, name, cls, fallback, url) {
+    var slot = el("span", { class: cls + " logo-slot", "data-logo-kind": kind, "data-logo-name": name });
+    var known = url || state.logos[kind][name];
+    if (known) slot.appendChild(logoImg(known, cls));
+    else (fallback || []).forEach(function (node) { if (node) slot.appendChild(node); });
+    return slot;
+  }
+
+  function logoImg(url, cls) {
+    return el("img", { class: (cls === "console-logo" ? "console-logo-img" : "logo-img"), alt: "", src: url, draggable: "false" });
+  }
+
+  function paintLogos(root) {
+    (root || document).querySelectorAll(".logo-slot[data-logo-kind]").forEach(function (slot) {
+      var kind = slot.getAttribute("data-logo-kind");
+      var url = state.logos[kind] && state.logos[kind][slot.getAttribute("data-logo-name")];
+      if (!url || slot.querySelector("img")) return;
+      slot.replaceChildren(logoImg(url, slot.classList.contains("console-logo") ? "console-logo" : ""));
+      var tile = slot.closest(".console, .tile, .library-sub");
+      if (tile) tile.classList.add("has-logo");
+    });
+    var missing = { consoles: [], developers: [] };
+    (root || document).querySelectorAll(".logo-slot[data-logo-kind]").forEach(function (slot) {
+      var kind = slot.getAttribute("data-logo-kind");
+      var name = slot.getAttribute("data-logo-name");
+      if (!missing[kind] || !name || state.logos[kind][name] || state.logoAsked[kind][name]) return;
+      missing[kind].push(name);
+    });
+    if (missing.consoles.length) loadLogos("consoles", missing.consoles);
+    if (missing.developers.length) loadLogos("developers", missing.developers);
+  }
+
+  // Logos come from the rom-manager logos route as image data URIs, once per name
+  // per session. A missing route (older server) or missing file keeps the fallback.
+  async function loadLogos(kind, names) {
+    var want = names.filter(function (name) { return name && !state.logoAsked[kind][name]; });
+    if (!want.length) return;
+    want.forEach(function (name) { state.logoAsked[kind][name] = true; });
+    for (var i = 0; i < want.length; i += 500) {
+      var batch = want.slice(i, i + 500);
+      try {
+        var result = await api("logos", { kind: kind, names: batch });
+        var logos = (result && result.logos) || {};
+        var got = false;
+        Object.keys(logos).forEach(function (name) {
+          if (batch.indexOf(name) >= 0 && fmt.isLogoUri(logos[name])) {
+            state.logos[kind][name] = logos[name];
+            got = true;
+          }
+        });
+        if (kind === "consoles") {
+          state.systems.forEach(function (entry) { if (state.logos.consoles[entry.system]) entry.logoUrl = state.logos.consoles[entry.system]; });
+        }
+        if (got) paintLogos(document.getElementById("main"));
+      } catch (e) {
+        /* No logos: cards keep the styled name. */
+      }
+    }
+  }
+
+  async function loadDevelopers() {
+    try {
+      var result = await api("developers", { min: DEV_MIN_GAMES });
+      state.developers = (result.developers || []).filter(function (row) { return row && row.name; });
+      state.devTotal = Number(result.total) || 0;
+    } catch (e) {
+      state.developers = [];
+    }
+  }
+
+  async function renderDevelopers(main) {
+    clearMain(main);
+    main.appendChild(platformsHead("developers"));
+    var token = state.token;
+    if (!state.allDevelopers) {
+      main.appendChild(el("p", { class: "muted", text: "Loading…" }));
+      try {
+        var result = await api("developers", { min: 1 });
+        state.allDevelopers = (result.developers || []).filter(function (row) { return row && row.name; });
+        state.devTotal = Number(result.total) || state.devTotal;
+      } catch (error) {
+        showPageError(main, token, error.message);
+        return;
+      }
+      if (token !== state.token) return;
+      clearMain(main);
+      main.appendChild(platformsHead("developers"));
+    }
+    if (!state.allDevelopers.length) {
+      main.appendChild(el("div", { class: "empty", text: state.indexing ? "Library is being indexed" : "No developers in the index yet." }));
+      return;
+    }
+    main.appendChild(el("p", { class: "muted dev-note", text: state.allDevelopers.length + " developers, most games first. Browse by Developer shows those with " + DEV_MIN_GAMES + " or more." }));
+    var grid = el("div", { class: "platforms dev-list" });
+    state.allDevelopers.forEach(function (row) {
+      var tile = el("button", { type: "button", class: "tile dev-line", "data-nav": "1", "data-developer": row.name });
+      tile.appendChild(logoSlot("developers", row.name, "tile-logo", [devMonogram(row.name)]));
+      var text = el("span", { class: "tile-text" });
+      text.appendChild(el("b", { text: row.name }));
+      text.appendChild(el("span", { text: gamesLabel(row.games) + " · " + row.roms + " ROMs" }));
+      tile.appendChild(text);
+      grid.appendChild(tile);
+    });
+    main.appendChild(grid);
+    paintLogos(main);
+  }
+
+  function platformsHead(active) {
+    var head = el("div", { class: "page-head" });
+    head.appendChild(el("h1", { text: active === "developers" ? "Developers" : "Platforms" }));
+    var seg = el("div", { class: "seg", role: "group", "aria-label": "Browse" });
+    [["platforms", "Platforms"], ["developers", "Developers"]].forEach(function (pair) {
+      seg.appendChild(el("button", {
+        type: "button",
+        class: "chip" + (active === pair[0] ? " active" : ""),
+        "data-nav": "1",
+        "data-go": pair[0],
+        "aria-pressed": active === pair[0] ? "true" : "false",
+        text: pair[1]
+      }));
+    });
+    head.appendChild(seg);
+    return head;
   }
 
   // Console artwork is a fan of up to four box-art covers from that console's own
@@ -815,8 +1069,9 @@
     return tools;
   }
 
-  function nudgeConsoles(dir) {
-    var scroller = document.querySelector(".console-scroll");
+  function nudgeConsoles(dir, button) {
+    var row = button && button.closest ? button.closest(".console-row") : null;
+    var scroller = (row || document).querySelector(".console-scroll");
     if (!scroller) return;
     var delta = dir === "next" ? 168 : -168;
     if (typeof scroller.scrollBy === "function") scroller.scrollBy({ left: delta, behavior: "smooth" });
@@ -824,10 +1079,22 @@
   }
 
   function moveCarousel(dir) {
-    var tiles = Array.prototype.slice.call(document.querySelectorAll("#main .console"));
-    if (!tiles.length || !document.activeElement || !document.activeElement.closest) return false;
+    if (!document.activeElement || !document.activeElement.closest) return false;
     var current = document.activeElement.closest(".console");
     if (!current) return false;
+    var rows = Array.prototype.slice.call(document.querySelectorAll("#main .console-scroll"));
+    var rowIndex = rows.indexOf(current.closest(".console-scroll"));
+    var tiles = Array.prototype.slice.call((rows[rowIndex] || document).querySelectorAll(".console"));
+    if (dir === "up" || (dir === "down" && rows[rowIndex + 1])) {
+      var other = rows[rowIndex + (dir === "down" ? 1 : -1)];
+      if (!other) return false;
+      var target = other.querySelector(".console[aria-pressed='true']") || other.querySelector(".console");
+      if (target) {
+        target.focus();
+        if (target.scrollIntoView) target.scrollIntoView({ block: "nearest", inline: "nearest" });
+      }
+      return true;
+    }
     if (dir === "down") {
       var card = document.querySelector("#main .grid .card");
       if (card) {
@@ -860,19 +1127,23 @@
 
   function renderPlatforms(main) {
     clearMain(main);
-    main.appendChild(el("div", { class: "page-head" }, [el("h1", { text: "Platforms" })]));
+    main.appendChild(platformsHead("platforms"));
     if (!state.systems.length) {
       main.appendChild(el("div", { class: "empty", text: state.indexing ? "Library is being indexed" : "No platforms yet." }));
       return;
     }
     var grid = el("div", { class: "platforms" });
     state.systems.forEach(function (row) {
-      var tile = el("button", { type: "button", class: "tile", "data-nav": "1", "data-system": row.system });
-      tile.appendChild(el("b", { text: row.system }));
-      tile.appendChild(el("span", { text: row.games + " games · " + row.roms + " ROMs · " + fmt.formatBytes(row.bytes) }));
+      var tile = el("button", { type: "button", class: "tile dev-line", "data-nav": "1", "data-system": row.system });
+      tile.appendChild(logoSlot("consoles", row.system, "tile-logo", [consoleBadge(row.system, "console-badge")]));
+      var text = el("span", { class: "tile-text" });
+      text.appendChild(el("b", { text: row.system }));
+      text.appendChild(el("span", { text: row.games + " games · " + row.roms + " ROMs · " + fmt.formatBytes(row.bytes) }));
+      tile.appendChild(text);
       grid.appendChild(tile);
     });
     main.appendChild(grid);
+    paintLogos(main);
   }
 
   function renderAchievements(main) {
@@ -1213,6 +1484,7 @@
     if (name === "collections") return renderCollections(main);
     if (name === "collection") return renderKeyed(main, state.route.id || "Collection", keysFor(state.route.id), "This collection is empty.");
     if (name === "platforms") return renderPlatforms(main);
+    if (name === "developers") return renderDevelopers(main);
     if (name === "achievements") return renderAchievements(main);
     if (name === "settings") return renderSettings(main);
     if (name === "game") return renderGame(main);
@@ -1699,6 +1971,11 @@
       return;
     }
     if (event.target.closest("[data-dup]") || event.target.closest("label.check")) return;
+    var dev = event.target.closest("[data-developer]");
+    if (dev) {
+      go({ name: "library", developer: dev.getAttribute("data-developer") || "" });
+      return;
+    }
     var picked = event.target.closest("[data-console]");
     if (picked) {
       go({ name: "library", system: picked.getAttribute("data-console") || "" });
@@ -1706,7 +1983,7 @@
     }
     var nudge = event.target.closest("[data-console-nav]");
     if (nudge) {
-      nudgeConsoles(nudge.getAttribute("data-console-nav"));
+      nudgeConsoles(nudge.getAttribute("data-console-nav"), nudge);
       return;
     }
     var view = event.target.closest("[data-lib-view]");
@@ -1907,7 +2184,7 @@
     }
     hostCall("getUserContext", {}).catch(function () {});
     try {
-      await Promise.all([loadStore(), loadSystems()]);
+      await Promise.all([loadStore(), loadSystems(), loadDevelopers()]);
     } catch (error) {
       document.getElementById("main").appendChild(el("div", { class: "banner", text: error.message || "ROM Manager could not reach the library." }));
     }

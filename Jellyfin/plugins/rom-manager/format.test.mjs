@@ -82,3 +82,17 @@ test("isCheatRom reads tags, tg, or the file name", () => {
   assert.equal(fmt.isCheatRom(null), false);
   assert.deepEqual(fmt.fileTags("a/Game (USA) [t1].sfc"), ["(USA)", "[t1]"]);
 });
+
+test("developer routes round-trip and logo URIs are restricted to image data", () => {
+  assert.deepEqual(fmt.parseRoute("#/developer/Data%20East"), { name: "library", developer: "Data East" });
+  assert.deepEqual(fmt.parseRoute("#/developers"), { name: "developers" });
+  assert.equal(fmt.routeHash({ name: "library", developer: "Technōs Japan" }), "#/developer/" + encodeURIComponent("Technōs Japan"));
+  assert.equal(fmt.routeHash({ name: "developers" }), "#/developers");
+  assert.deepEqual(fmt.parseRoute(fmt.routeHash({ name: "library", developer: "SNK/../x" })), { name: "library", developer: "SNK/../x" });
+  assert.equal(fmt.isLogoUri("data:image/svg+xml;base64,PHN2Zz48L3N2Zz4="), true);
+  assert.equal(fmt.isLogoUri("data:image/png;base64,iVBORw0KGgo="), true);
+  assert.equal(fmt.isLogoUri("data:text/html;base64,PHNjcmlwdD4="), false);
+  assert.equal(fmt.isLogoUri("javascript:alert(1)"), false);
+  assert.equal(fmt.isLogoUri("data:image/svg+xml,<svg onload=alert(1)>"), false);
+  assert.equal(fmt.isLogoUri(null), false);
+});

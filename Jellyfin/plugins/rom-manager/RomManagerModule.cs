@@ -58,6 +58,8 @@ public sealed class RomManagerModule : IMoonbaseModule
         routes.MapPost("game", Game);
         routes.MapPost("launch", Launch);
         routes.MapPost("covers", Covers);
+        routes.MapPost("developers", Developers);
+        routes.MapPost("logos", Logos);
         routes.MapPost("duplicates", Duplicates);
         routes.MapPost("rescan", Rescan);
         routes.MapPost("trash-list", TrashList);
@@ -75,6 +77,10 @@ public sealed class RomManagerModule : IMoonbaseModule
     public Task<PluginRouteResult> Launch(PluginRouteRequest request) => Guard(request, () => LaunchCore(request));
 
     public Task<PluginRouteResult> Covers(PluginRouteRequest request) => Guard(request, () => CoversCore(request));
+
+    public Task<PluginRouteResult> Developers(PluginRouteRequest request) => Guard(request, () => DevelopersCore(request));
+
+    public Task<PluginRouteResult> Logos(PluginRouteRequest request) => Guard(request, () => Task.FromResult(LogosCore(request)));
 
     public Task<PluginRouteResult> Duplicates(PluginRouteRequest request) => Guard(request, () => DuplicatesCore(request));
 
@@ -134,6 +140,13 @@ public sealed class RomManagerModule : IMoonbaseModule
         var snapshot = await _channel.GetIndexAsync(request.Services, request.CancellationToken).ConfigureAwait(false);
         var keys = StringList(body, "keys");
         var filtered = RomQuery.Filter(snapshot.Games, Str(body, "q"), Str(body, "system"), keys, Str(body, "sort") ?? "title");
+        var developer = Str(body, "developer");
+        if (!string.IsNullOrWhiteSpace(developer))
+        {
+            var devKey = RomDevelopers.KeyOf(developer);
+            filtered = filtered.Where(game => RomDevelopers.Matches(game, devKey)).ToList();
+        }
+
         var (offset, limit) = Page(body, 48);
         var page = RomQuery.Page(filtered, offset, limit);
         return PluginRouteResult.Json(new
@@ -144,6 +157,42 @@ public sealed class RomManagerModule : IMoonbaseModule
             total = page.Total,
             items = page.Page.Select(Card),
         });
+    }
+
+    // Developers by game count, using the same game grouping as the console counts.
+    private async Task<PluginRouteResult> DevelopersCore(PluginRouteRequest request)
+    {
+        var body = Body(request);
+        var min = (int)Math.Clamp(Long(body, "min"), 1, 100000);
+        var limitRaw = Long(body, "limit");
+        var limit = limitRaw <= 0 ? 5000 : (int)Math.Min(limitRaw, 5000);
+        var snapshot = await _channel.GetIndexAsync(request.Services, request.CancellationToken).ConfigureAwait(false);
+        var rows = RomDevelopers.Rollup(snapshot.Games);
+        var shown = rows.Where(row => row.Games >= min).Take(limit).ToList();
+        return PluginRouteResult.Json(new
+        {
+            ok = true,
+            indexing = snapshot.Indexing,
+            total = rows.Count,
+            developers = shown.Select(row => new { key = row.Key, name = row.Name, games = row.Games, roms = row.Roms }),
+        });
+    }
+
+    // Logos as data: URIs for <img src>. The host route table has no path parameters, binary
+    // bodies or response headers, so this is a POST that returns small data URIs instead of a
+    // GET with cache headers; the client keeps them for the session.
+    private static PluginRouteResult LogosCore(PluginRouteRequest request)
+    {
+        var body = Body(request);
+        var kind = Str(body, "kind");
+        if (!RomLogos.IsKind(kind))
+        {
+            return Fail("kind must be consoles or developers");
+        }
+
+        var names = StringList(body, "names") ?? new List<string>();
+        var logos = RomLogos.Load(RomRoot(request.Services), kind!, names);
+        return PluginRouteResult.Json(new { ok = true, kind, logos });
     }
 
     private async Task<PluginRouteResult> GameCore(PluginRouteRequest request)
@@ -955,6 +1004,7 @@ public sealed class RomManagerModule : IMoonbaseModule
         lb = game.Lb,
         cover = game.Cover == 0 ? (int?)null : game.Cover,
         cheat = CheatFlag(game),
+        developer = RomDevelopers.ForGame(game)?.Name,
     };
 
     // "best" when the game's chosen file is a cheat or trainer ROM, "some" when only other

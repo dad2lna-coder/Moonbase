@@ -82,6 +82,8 @@
     if (head === "game") return { name: "game", key: safeDecode(rest) };
     if (head === "collection") return { name: "collection", id: safeDecode(rest) };
     if (head === "platform") return { name: "library", system: safeDecode(rest) };
+    if (head === "developer") return { name: "library", developer: safeDecode(rest) };
+    if (head === "developers") return { name: "developers" };
     if (head === "library" || head === "favorites" || head === "recent" || head === "collections" || head === "platforms" || head === "achievements" || head === "settings" || head === "duplicates" || head === "trash" || head === "more") {
       return { name: head };
     }
@@ -93,11 +95,19 @@
     if (name === "home") return "#/home";
     if (name === "game") return "#/game/" + encodeURIComponent(route.key || "");
     if (name === "collection") return "#/collection/" + encodeURIComponent(route.id || "");
+    if (name === "library" && route.developer) return "#/developer/" + encodeURIComponent(route.developer);
     if (name === "library" && route.system) return "#/platform/" + encodeURIComponent(route.system);
     return "#/" + name;
   }
 
+  // Logos only ever arrive as base64 image data URIs and are only used as <img src>.
+  var LOGO_URI = /^data:image\/(svg\+xml|png|webp);base64,[A-Za-z0-9+\/=]+$/;
+  function isLogoUri(value) {
+    return typeof value === "string" && value.length < 1500000 && LOGO_URI.test(value);
+  }
+
   return {
+    isLogoUri: isLogoUri,
     formatBytes: formatBytes,
     joinParts: joinParts,
     versionName: versionName,
