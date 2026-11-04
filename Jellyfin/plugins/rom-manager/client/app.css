@@ -529,6 +529,9 @@ img[hidden] { display: none; }
 .dev-tile .console-logo { top: 12%; bottom: 12%; justify-content: center; }
 .dev-tile .console-logo-img { height: 100%; max-height: 40cqi; width: 92%; }
 .dev-tile .console-count { margin-top: 8px; }
+.other-tile .console-face { background: radial-gradient(120% 70% at 50% 0%, rgba(126, 176, 255, 0.35) 0%, transparent 70%), linear-gradient(170deg, #22344d 0%, #0a1422 78%); }
+.other-tile .console-logo { flex-direction: column; gap: 6px; }
+.other-ico svg { width: 28cqi; height: 28cqi; stroke: #cfe0ff; fill: rgba(126, 176, 255, 0.18); stroke-width: 1.8; stroke-linejoin: round; filter: drop-shadow(0 0 6px rgba(126, 176, 255, 0.7)); display: block; }
 .see-all-tile .console-face { background: linear-gradient(170deg, rgba(30, 111, 255, 0.35), rgba(8, 18, 32, 0.95)); border-style: dashed; }
 .tile.dev-line { display: flex; align-items: center; gap: 12px; text-align: left; }
 .tile .tile-logo { margin: 0; display: grid; place-items: center; flex: none; width: 64px; height: 34px; }

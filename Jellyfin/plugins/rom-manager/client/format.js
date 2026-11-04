@@ -83,7 +83,7 @@
     if (head === "collection") return { name: "collection", id: safeDecode(rest) };
     if (head === "platform") return { name: "library", system: safeDecode(rest) };
     if (head === "developer") return { name: "library", developer: safeDecode(rest) };
-    if (head === "developers") return { name: "developers" };
+    if (head === "developers") return rest === "other" ? { name: "developers-other" } : { name: "developers" };
     if (head === "library" || head === "favorites" || head === "recent" || head === "collections" || head === "platforms" || head === "achievements" || head === "settings" || head === "duplicates" || head === "trash" || head === "more") {
       return { name: head };
     }
@@ -95,6 +95,7 @@
     if (name === "home") return "#/home";
     if (name === "game") return "#/game/" + encodeURIComponent(route.key || "");
     if (name === "collection") return "#/collection/" + encodeURIComponent(route.id || "");
+    if (name === "developers-other") return "#/developers/other";
     if (name === "library" && route.developer) return "#/developer/" + encodeURIComponent(route.developer);
     if (name === "library" && route.system) return "#/platform/" + encodeURIComponent(route.system);
     return "#/" + name;

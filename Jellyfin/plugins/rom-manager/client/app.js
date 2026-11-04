@@ -30,6 +30,8 @@
     developers: [],
     devTotal: 0,
     allDevelopers: null,
+    devOther: [],
+    devOtherGames: 0,
     logos: { consoles: {}, developers: {} },
     logoAsked: { consoles: {}, developers: {} }
   };
@@ -59,7 +61,7 @@
   };
   var GENERIC_ICON = "M7 6h10a3 3 0 0 1 3 3v2a2 2 0 0 1-2 2h-1v2H7v-2H6a2 2 0 0 1-2-2V9a3 3 0 0 1 3-3zM8 8h2M14 8h2";
   var DEV_ICON = "M4 21V8l8-5 8 5v13M9 21v-6h6v6M8 11h.01M12 11h.01M16 11h.01";
-  var DEV_MIN_GAMES = 10;
+  var OTHER_ICON = "M4 4h6v6H4zM14 4h6v6h-6zM4 14h6v6H4zM14 14h6v6h-6z";
   var GAMEPAD_ICON = "M6 9h12a3 3 0 0 1 3 3v2a3 3 0 0 1-3 3H6a3 3 0 0 1-3-3v-2a3 3 0 0 1 3-3zM8 13v3M6.5 14.5h3M16 14h.01M18 16h.01";
   // Brand-ish gradient per console: top colour, bottom colour, glow colour.
   var CONSOLE_COLORS = {
@@ -308,7 +310,7 @@
   }
 
   function updateNav() {
-    var name = state.route.name === "collection" ? "collections" : state.route.name === "developers" ? "platforms" : state.route.name;
+    var name = state.route.name === "collection" ? "collections" : state.route.name === "developers" ? "platforms" : state.route.name === "developers-other" ? "library" : state.route.name;
     document.querySelectorAll("#side-nav [data-go], #switcher [data-go]").forEach(function (button) {
       button.classList.toggle("active", button.getAttribute("data-go") === name);
     });
@@ -626,7 +628,7 @@
     main.appendChild(browseHead());
     main.appendChild(consoleCarousel(system));
     watchConsoleArt(main);
-    if (state.developers.length) {
+    if (state.developers.length || state.devOther.length) {
       main.appendChild(developerHead());
       main.appendChild(developerCarousel(developer));
     }
@@ -771,18 +773,37 @@
       var selected = selectedKey && (foldName(entry.name) === selectedKey || entry.key === selectedKey);
       scroller.appendChild(developerTile(entry, !!selected));
     });
-    var more = el("button", { type: "button", class: "console dev-tile see-all-tile", "data-nav": "1", "data-go": "developers", "aria-label": "All developers" });
-    var moreFace = el("span", { class: "console-face dev-face" });
-    moreFace.appendChild(el("span", { class: "console-gloss", "aria-hidden": "true" }));
-    var moreLabel = el("span", { class: "console-logo" });
-    moreLabel.appendChild(el("b", { class: "console-name", text: "See all" }));
-    moreFace.appendChild(moreLabel);
-    more.appendChild(moreFace);
-    more.appendChild(el("span", { class: "tiny console-count", text: state.devTotal ? state.devTotal + " developers" : "Developers" }));
-    scroller.appendChild(more);
+    if (state.devOther.length) {
+      var otherKey = selectedKey && state.devOther.some(function (row) { return foldName(row.name) === selectedKey || row.key === selectedKey; });
+      scroller.appendChild(otherTile(!!otherKey));
+    }
+
     row.appendChild(scroller);
     row.appendChild(el("button", { type: "button", class: "console-arrow", "data-console-nav": "next", "aria-label": "Next developers", text: "›" }));
     return row;
+  }
+
+  // One card for every developer without a logo file; it opens the Other list.
+  function otherTile(selected) {
+    var tile = el("button", {
+      type: "button",
+      class: "console dev-tile other-tile",
+      "data-nav": "1",
+      "data-go": "developers-other",
+      "aria-pressed": selected ? "true" : "false",
+      "aria-label": "Other developers, " + gamesLabel(state.devOtherGames)
+    });
+    var face = el("span", { class: "console-face dev-face" });
+    face.appendChild(el("span", { class: "console-gloss", "aria-hidden": "true" }));
+    var label = el("span", { class: "console-logo" });
+    var icon = svg(OTHER_ICON);
+    icon.classList.add("other-ico");
+    label.appendChild(icon);
+    label.appendChild(el("b", { class: "console-name", text: "Other" }));
+    face.appendChild(label);
+    tile.appendChild(face);
+    tile.appendChild(el("span", { class: "tiny console-count", text: gamesLabel(state.devOtherGames) }));
+    return tile;
   }
 
   function developerTile(entry, selected) {
@@ -871,14 +892,67 @@
     }
   }
 
+  // Developers with a logo file in .logos/developers get their own card; everyone
+  // else shares the Other card. The logos route re-lists the folder on every call,
+  // so a newly dropped logo moves its developer out of Other on the next load.
   async function loadDevelopers() {
     try {
-      var result = await api("developers", { min: DEV_MIN_GAMES });
-      state.developers = (result.developers || []).filter(function (row) { return row && row.name; });
-      state.devTotal = Number(result.total) || 0;
+      var result = await api("developers", { min: 1 });
+      state.allDevelopers = (result.developers || []).filter(function (row) { return row && row.name; });
+      state.devTotal = Number(result.total) || state.allDevelopers.length;
     } catch (e) {
+      state.allDevelopers = null;
       state.developers = [];
+      state.devOther = [];
+      state.devOtherGames = 0;
+      return;
     }
+    await loadLogos("developers", state.allDevelopers.map(function (row) { return row.name; }));
+    splitDevelopers();
+  }
+
+  function splitDevelopers() {
+    var withLogo = [];
+    var other = [];
+    var otherGames = 0;
+    (state.allDevelopers || []).forEach(function (row) {
+      if (state.logos.developers[row.name]) withLogo.push(row);
+      else {
+        other.push(row);
+        otherGames += Number(row.games) || 0;
+      }
+    });
+    state.developers = withLogo;
+    state.devOther = other;
+    state.devOtherGames = otherGames;
+  }
+
+  async function renderDevelopersOther(main) {
+    clearMain(main);
+    var head = el("div", { class: "page-head" });
+    head.appendChild(el("h1", { text: "Other developers" }));
+    head.appendChild(el("button", { type: "button", class: "text-btn see-all", "data-nav": "1", "data-go": "library", text: "Back to Library" }));
+    main.appendChild(head);
+    if (!state.devOther.length) {
+      main.appendChild(el("div", { class: "empty", text: "Every developer has a logo card." }));
+      return;
+    }
+    main.appendChild(el("p", { class: "muted dev-note", text: state.devOther.length + " developers without a logo · " + gamesLabel(state.devOtherGames) + ". Add <Name>.svg or .png to .logos/developers to give one its own card." }));
+    main.appendChild(developerList(state.devOther));
+  }
+
+  function developerList(rows) {
+    var grid = el("div", { class: "platforms dev-list" });
+    rows.forEach(function (row) {
+      var tile = el("button", { type: "button", class: "tile dev-line", "data-nav": "1", "data-developer": row.name });
+      tile.appendChild(logoSlot("developers", row.name, "tile-logo", [devMonogram(row.name)]));
+      var text = el("span", { class: "tile-text" });
+      text.appendChild(el("b", { text: row.name }));
+      text.appendChild(el("span", { text: gamesLabel(row.games) + " · " + row.roms + " ROMs" }));
+      tile.appendChild(text);
+      grid.appendChild(tile);
+    });
+    return grid;
   }
 
   async function renderDevelopers(main) {
@@ -903,17 +977,8 @@
       main.appendChild(el("div", { class: "empty", text: state.indexing ? "Library is being indexed" : "No developers in the index yet." }));
       return;
     }
-    main.appendChild(el("p", { class: "muted dev-note", text: state.allDevelopers.length + " developers, most games first. Browse by Developer shows those with " + DEV_MIN_GAMES + " or more." }));
-    var grid = el("div", { class: "platforms dev-list" });
-    state.allDevelopers.forEach(function (row) {
-      var tile = el("button", { type: "button", class: "tile dev-line", "data-nav": "1", "data-developer": row.name });
-      tile.appendChild(logoSlot("developers", row.name, "tile-logo", [devMonogram(row.name)]));
-      var text = el("span", { class: "tile-text" });
-      text.appendChild(el("b", { text: row.name }));
-      text.appendChild(el("span", { text: gamesLabel(row.games) + " · " + row.roms + " ROMs" }));
-      tile.appendChild(text);
-      grid.appendChild(tile);
-    });
+    main.appendChild(el("p", { class: "muted dev-note", text: state.allDevelopers.length + " developers, most games first." }));
+    var grid = developerList(state.allDevelopers);
     main.appendChild(grid);
     paintLogos(main);
   }
@@ -1485,6 +1550,7 @@
     if (name === "collection") return renderKeyed(main, state.route.id || "Collection", keysFor(state.route.id), "This collection is empty.");
     if (name === "platforms") return renderPlatforms(main);
     if (name === "developers") return renderDevelopers(main);
+    if (name === "developers-other") return renderDevelopersOther(main);
     if (name === "achievements") return renderAchievements(main);
     if (name === "settings") return renderSettings(main);
     if (name === "game") return renderGame(main);

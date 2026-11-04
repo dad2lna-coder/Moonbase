@@ -16,7 +16,7 @@ const developers = [
 ];
 const allDevelopers = developers.concat([{ key: "smallco", name: "Small Co", games: 1, roms: 1 }]);
 
-test("Browse by Developer carousel, developer grid and all-developers page", async () => {
+function boot(devLogos) {
   const calls = [];
   function call(method, params) {
     calls.push({ method, params });
@@ -39,8 +39,7 @@ test("Browse by Developer carousel, developer grid and all-developers page", asy
       const logos = {};
       (data.names || []).forEach((name) => {
         if (data.kind === "consoles" && name === "Genesis") logos[name] = SVG;
-        if (data.kind === "developers" && name === "Sega") logos[name] = SVG;
-        if (data.kind === "developers" && name === "Data East") logos[name] = "javascript:alert(1)";
+        if (data.kind === "developers" && devLogos[name]) logos[name] = devLogos[name];
       });
       return Promise.resolve({ ok: true, kind: data.kind, logos });
     }
@@ -74,35 +73,48 @@ test("Browse by Developer carousel, developer grid and all-developers page", asy
     script.textContent = code;
     window.document.body.appendChild(script);
   }
-  try {
-    run(readFileSync(join(root, "client/format.js"), "utf8"));
-    run(readFileSync(join(root, "client/app.js"), "utf8"));
-    const document = window.document;
-    const main = () => document.getElementById("main");
-    async function until(check, label) {
-      for (let i = 0; i < 100; i++) {
-        if (check()) return;
-        await new Promise((resolve) => setTimeout(resolve, 15));
-      }
-      throw new Error(label + "\n" + (main() ? main().innerHTML.slice(0, 1500) : "") + "\n" + errors.join("\n"));
+  run(readFileSync(join(root, "client/format.js"), "utf8"));
+  run(readFileSync(join(root, "client/app.js"), "utf8"));
+  const document = window.document;
+  const main = () => document.getElementById("main");
+  async function until(check, label) {
+    for (let i = 0; i < 100; i++) {
+      if (check()) return;
+      await new Promise((resolve) => setTimeout(resolve, 15));
     }
+    throw new Error(label + "\n" + (main() ? main().innerHTML.slice(0, 1500) : "") + "\n" + errors.join("\n"));
+  }
+  return { window, document, main, until, calls, errors };
+}
 
+test("Browse by Developer shows logo developers as cards and the rest under Other", async () => {
+  // Data East's "logo" is not an image data URI, so it is treated as missing.
+  const { window, document, main, until, calls, errors } = boot({ Sega: SVG, "Data East": "javascript:alert(1)" });
+  try {
     await until(() => main().querySelector(".dev-row"), "developer carousel");
     const heads = Array.from(main().querySelectorAll("h1")).map((h) => h.textContent);
     assert.deepEqual(heads, ["Browse by Console", "Browse by Developer"]);
     const devTiles = Array.from(main().querySelectorAll(".dev-row [data-developer]"));
-    assert.deepEqual(devTiles.map((t) => t.getAttribute("data-developer")), ["Sega", "Data East"]);
+    assert.deepEqual(devTiles.map((t) => t.getAttribute("data-developer")), ["Sega"]);
     assert.match(devTiles[0].textContent, /12 Games/);
-    assert.match(devTiles[1].textContent, /10 Games/);
-    assert.ok(main().querySelector(".dev-row [data-go='developers']"), "see-all card");
+    // Data East (bad logo) and Small Co (no logo) share one Other card at the end.
+    const scrollerKids = Array.from(main().querySelector(".dev-row .console-scroller, .dev-row [class*='scroll']") ? main().querySelector(".dev-row .console-scroller, .dev-row [class*='scroll']").children : []);
+    const other = main().querySelector(".dev-row .other-tile[data-go='developers-other']");
+    assert.ok(other, "Other card");
+    if (scrollerKids.length) assert.equal(scrollerKids[scrollerKids.length - 1], other);
+    assert.match(other.textContent, /Other/);
+    assert.match(other.textContent, /11 Games/);
+    assert.equal(main().querySelector(".dev-row [data-developer='Data East']"), null);
+    assert.equal(main().querySelector(".dev-row [data-go='developers']"), null, "no see-all card");
+    assert.ok(main().querySelector(".dev-head [data-go='developers']"), "All developers link in the header");
+    const devCalls = calls.filter((c) => c.params && c.params.path === "developers");
+    assert.equal(Number(devCalls[0].params.data.min), 1);
 
     // Logos arrive as <img> only; a non-image URI is ignored and the styled name stays.
     await until(() => main().querySelector(".dev-row [data-developer='Sega'] img"), "Sega logo");
     await until(() => main().querySelector("[data-console='Genesis'] img.console-logo-img"), "Genesis logo");
     assert.equal(main().querySelector("[data-developer='Sega'] img").getAttribute("src"), SVG);
     assert.ok(main().querySelector("[data-developer='Sega']").classList.contains("has-logo"));
-    assert.equal(main().querySelector("[data-developer='Data East'] img"), null);
-    assert.equal(main().querySelector("[data-developer='Data East'] .console-name").textContent, "Data East");
     assert.equal(main().querySelector("[data-console='Arcade'] img.console-logo-img"), null);
     assert.equal(main().querySelector("[data-console='Arcade'] .console-name").textContent, "Arcade");
     assert.equal(main().querySelectorAll("svg image, foreignObject").length, 0);
@@ -133,14 +145,25 @@ test("Browse by Developer carousel, developer grid and all-developers page", asy
       return last !== gamesCall && last.params.data.developer === "Sega";
     }, "sort keeps developer");
 
-    // All developers page lists everyone, including those under the carousel cutoff.
-    await until(() => main().querySelector(".dev-row [data-go='developers']") && /Sonic/.test(main().textContent), "carousel after sort");
-    main().querySelector(".dev-row [data-go='developers']").click();
-    await until(() => main().querySelector(".dev-list"), "all developers page");
-    assert.deepEqual(Array.from(main().querySelectorAll(".dev-list [data-developer]")).map((t) => t.getAttribute("data-developer")), ["Sega", "Data East", "Small Co"]);
-    assert.match(main().textContent, /1 Game · 1 ROMs/);
+    // The Other card opens #/developers/other listing the logo-less developers.
+    await until(() => main().querySelector(".dev-row .other-tile") && /Sonic/.test(main().textContent), "carousel after sort");
+    main().querySelector(".dev-row .other-tile").click();
+    await until(() => main().querySelector(".dev-list"), "other developers page");
+    const fmt = window.RomFormat;
+    assert.equal(JSON.stringify(fmt.parseRoute("#/developers/other")), JSON.stringify({ name: "developers-other" }));
+    assert.equal(fmt.routeHash({ name: "developers-other" }), "#/developers/other");
+    assert.match(main().querySelector("h1").textContent, /Other developers/);
+    assert.deepEqual(Array.from(main().querySelectorAll(".dev-list [data-developer]")).map((t) => t.getAttribute("data-developer")), ["Data East", "Small Co"]);
+    assert.match(main().textContent, /2 developers without a logo/);
     main().querySelector(".dev-list [data-developer='Small Co']").click();
     await until(() => main().querySelector(".library-sub .sub-name") && main().querySelector(".library-sub .sub-name").textContent === "Small Co", "small developer grid");
+    assert.equal(main().querySelector(".dev-row .other-tile").getAttribute("aria-pressed"), "true");
+
+    // All developers page still lists everyone.
+    main().querySelector(".dev-head [data-go='developers']").click();
+    await until(() => main().querySelector(".dev-list") && !/without a logo/.test(main().textContent), "all developers page");
+    assert.deepEqual(Array.from(main().querySelectorAll(".dev-list [data-developer]")).map((t) => t.getAttribute("data-developer")), ["Sega", "Data East", "Small Co"]);
+    assert.match(main().textContent, /1 Game · 1 ROMs/);
     assert.deepEqual(errors, []);
   } finally {
     window.close();
