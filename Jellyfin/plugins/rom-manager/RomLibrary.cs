@@ -364,6 +364,27 @@ public static class RomTags
 
     public static bool IsCheat(IReadOnlyList<string>? tags) => tags != null && tags.Any(IsCheatTag);
 
+    // GoodTools hack tags are lowercase: [h], [h1], [h2C], [h1+2]. Capital [H...] is not matched.
+    private static readonly System.Text.RegularExpressions.Regex HackTag =
+        new(@"^\[h\d*[^\]]*\]$", System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+
+    /// <summary>
+    /// A hacked ROM: a tag containing "hack" in any case, or a lowercase GoodTools hack tag
+    /// ([h], [h1], [h2C], [h1+2]). [!], [b], [T+Eng] and title words are not hacks.
+    /// </summary>
+    public static bool IsHackTag(string? tag)
+    {
+        if (string.IsNullOrWhiteSpace(tag))
+        {
+            return false;
+        }
+
+        var text = tag.Trim();
+        return text.Contains("hack", StringComparison.OrdinalIgnoreCase) || HackTag.IsMatch(text);
+    }
+
+    public static bool IsHack(IReadOnlyList<string>? tags) => tags != null && tags.Any(IsHackTag);
+
     private static string Unwrap(string tag)
     {
         var text = tag.Trim();

@@ -147,6 +147,17 @@ public sealed class RomManagerModule : IMoonbaseModule
             filtered = filtered.Where(game => RomDevelopers.Matches(game, devKey)).ToList();
         }
 
+        // flag=hack|cheat lists only games with at least one such version.
+        var flag = Str(body, "flag");
+        if (string.Equals(flag, "hack", StringComparison.OrdinalIgnoreCase))
+        {
+            filtered = filtered.Where(game => HackFlag(game) != null).ToList();
+        }
+        else if (string.Equals(flag, "cheat", StringComparison.OrdinalIgnoreCase))
+        {
+            filtered = filtered.Where(game => CheatFlag(game) != null).ToList();
+        }
+
         var (offset, limit) = Page(body, 48);
         var page = RomQuery.Page(filtered, offset, limit);
         return PluginRouteResult.Json(new
@@ -694,6 +705,7 @@ public sealed class RomManagerModule : IMoonbaseModule
                     ks = member.KeepCopy,
                     cover = member.Cover,
                     cheat = RomTags.IsCheat(member.Tags) ? true : (bool?)null,
+                    hack = RomTags.IsHack(member.Tags) ? true : (bool?)null,
                 }),
             }),
         });
@@ -1004,12 +1016,18 @@ public sealed class RomManagerModule : IMoonbaseModule
         lb = game.Lb,
         cover = game.Cover == 0 ? (int?)null : game.Cover,
         cheat = CheatFlag(game),
+        hack = HackFlag(game),
         developer = RomDevelopers.ForGame(game)?.Name,
     };
 
     // "best" when the game's chosen file is a cheat or trainer ROM, "some" when only other
     // versions are, null otherwise. Labels only: Best Experience scoring is untouched.
-    private static string? CheatFlag(GameRecord game)
+    private static string? CheatFlag(GameRecord game) => TagFlag(game, RomTags.IsCheat);
+
+    // Same "best"/"some" rule for hacked ROMs.
+    private static string? HackFlag(GameRecord game) => TagFlag(game, RomTags.IsHack);
+
+    private static string? TagFlag(GameRecord game, Func<IReadOnlyList<string>?, bool> test)
     {
         RomEntry? best = null;
         var any = false;
@@ -1020,7 +1038,7 @@ public sealed class RomManagerModule : IMoonbaseModule
                 best = member;
             }
 
-            any |= RomTags.IsCheat(member.Tags);
+            any |= test(member.Tags);
         }
 
         if (!any)
@@ -1028,7 +1046,7 @@ public sealed class RomManagerModule : IMoonbaseModule
             return null;
         }
 
-        return RomTags.IsCheat((best ?? game.Members[0]).Tags) ? "best" : "some";
+        return test((best ?? game.Members[0]).Tags) ? "best" : "some";
     }
 
     private static object VersionView(RomEntry entry)
@@ -1044,6 +1062,8 @@ public sealed class RomManagerModule : IMoonbaseModule
             tags = entry.Tags,
             sizeBytes = entry.Bytes,
             best = entry.BestVersion,
+            cheat = RomTags.IsCheat(entry.Tags) ? true : (bool?)null,
+            hack = RomTags.IsHack(entry.Tags) ? true : (bool?)null,
             cover = entry.Cover,
         };
     }

@@ -647,6 +647,33 @@ img[hidden] { display: none; }
   box-shadow: 0 0 10px rgba(240, 177, 50, 0.55);
 }
 .art.has-vers .cheat-badge { top: 34px; }
+.pill.hack {
+  background: rgba(168, 85, 247, 0.18);
+  color: #d8b4fe;
+  border: 1px solid rgba(168, 85, 247, 0.6);
+  font-weight: 700;
+}
+.hack-badge {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 2;
+  padding: 3px 7px;
+  border-radius: 999px;
+  background: linear-gradient(180deg, #c084fc, #7e22ce);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.01em;
+  box-shadow: 0 0 10px rgba(168, 85, 247, 0.6);
+}
+.art.has-vers .hack-badge, .art.has-cheat .hack-badge { top: 34px; }
+.art.has-vers.has-cheat .hack-badge { top: 60px; }
+.card:not(.library) .art.has-hack .star { top: auto; bottom: 8px; }
+.version-file { word-break: break-all; color: var(--muted); margin: 2px 0; }
+.version-tags { color: var(--muted); margin: 2px 0; }
+.filter-flags { margin: 10px 0 4px; }
+.sub-flag { margin-left: 10px; }
 .card:not(.library) .art.has-cheat .star { top: auto; bottom: 8px; }
 .kv { display: grid; grid-template-columns: 110px 1fr; gap: 6px 10px; }
 .kv span { color: var(--muted); }

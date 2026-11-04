@@ -49,6 +49,28 @@
     return TRAINER_TAG.test(text);
   }
 
+  // Hacked ROMs: a tag containing "hack" in any case, or a lowercase GoodTools
+  // hack tag ([h], [h1], [h2C], [h1+2]). Case-sensitive so [H...] is not matched;
+  // [!], [b] and words in the title are not hacks.
+  var HACK_TAG = /^\[h\d*[^\]]*\]$/;
+
+  function isHackTag(tag) {
+    var text = String(tag == null ? "" : tag).trim();
+    if (!text) return false;
+    if (/hack/i.test(text)) return true;
+    return HACK_TAG.test(text);
+  }
+
+  function isHackRom(entry) {
+    if (!entry) return false;
+    if (entry.hack === true) return true;
+    var tags = Array.isArray(entry.tags) ? entry.tags : Array.isArray(entry.tg) ? entry.tg : [];
+    for (var i = 0; i < tags.length; i++) if (isHackTag(tags[i])) return true;
+    var tagged = fileTags(entry.file || entry.romFile || "");
+    for (var j = 0; j < tagged.length; j++) if (isHackTag(tagged[j])) return true;
+    return false;
+  }
+
   function fileTags(file) {
     return versionName(file).match(/\([^()]*\)|\[[^\[\]]*\]/g) || [];
   }
@@ -115,6 +137,8 @@
     isCheatTag: isCheatTag,
     fileTags: fileTags,
     isCheatRom: isCheatRom,
+    isHackTag: isHackTag,
+    isHackRom: isHackRom,
     parseRoute: parseRoute,
     routeHash: routeHash
   };

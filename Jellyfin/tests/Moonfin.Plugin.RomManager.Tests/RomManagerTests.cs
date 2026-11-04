@@ -125,7 +125,7 @@ public class RomLibraryTests
         {"p":"NES/Mario","s":"NES","t":"Super Mario Bros.","f":"Super Mario Bros. (World).nes","z":400,"y":1985,"tg":["(World)"],"c":1,"ge":"Platform","pub":"Nintendo","dev":"Nintendo","m":900,"sg":3,"ks":1,"mg":0,"km":0},
         {"p":"NES/Mario-copy","s":"NES","t":"Super Mario Bros.","f":"Super Mario Bros. (World) (copy).nes","z":400,"y":1985,"tg":["(World)"],"c":0,"ge":"Platform","pub":"Nintendo","dev":"Nintendo","m":800,"sg":3,"ks":0,"mg":0,"km":0},
         {"p":"Genesis/Sonic","s":"Genesis","t":"Sonic","f":"Sonic (USA).md","z":20,"y":1991,"tg":["(USA)"],"c":0,"ge":"Platform","pub":"Sega","dev":"Sonic Team","m":10,"sg":0,"ks":0,"mg":0,"km":0},
-        {"p":"SNES/Mana","s":"SNES","t":"Secret of Mana","f":"Secret of Mana (USA).sfc","z":10,"y":1993,"tg":["(USA)"],"c":0,"ge":"RPG","pub":"Square","dev":"Square","m":5,"sg":0,"ks":0,"mg":0,"km":0}
+        {"p":"SNES/Mana","s":"SNES","t":"Secret of Mana","f":"Secret of Mana (USA) [h1].sfc","z":10,"y":1993,"tg":["(USA)","[h1]"],"c":0,"ge":"RPG","pub":"Square","dev":"Square","m":5,"sg":0,"ks":0,"mg":0,"km":0}
       ]
     }
     """;
@@ -324,8 +324,65 @@ public class RomLogoTests
     }
 }
 
+public class RomHackTagTests
+{
+    [Theory]
+    [InlineData("[h]", true)]
+    [InlineData("[h1]", true)]
+    [InlineData("[h2C]", true)]
+    [InlineData("[h1+2]", true)]
+    [InlineData("(Hack)", true)]
+    [InlineData("[HACK by Foo]", true)]
+    [InlineData("[T+Eng]", false)]
+    [InlineData("[!]", false)]
+    [InlineData("[b]", false)]
+    [InlineData("[b1]", false)]
+    [InlineData("[H1]", false)]
+    [InlineData("[t1]", false)]
+    [InlineData("(USA)", false)]
+    [InlineData("", false)]
+    [InlineData(null, false)]
+    public void DetectsHackTags(string? tag, bool hack)
+    {
+        Assert.Equal(hack, RomTags.IsHackTag(tag));
+    }
+
+    [Fact]
+    public void IsHackChecksEveryTagAndLeavesCheatAlone()
+    {
+        Assert.True(RomTags.IsHack(new[] { "(USA)", "[h2C]" }));
+        Assert.False(RomTags.IsHack(new[] { "(USA)", "[T+Eng]", "[!]" }));
+        Assert.False(RomTags.IsHack(null));
+        Assert.False(RomTags.IsCheat(new[] { "[h1]" }));
+    }
+
+}
+
 public class RomManagerRouteTests
 {
+    [Fact]
+    public async Task CardsCarryHackFlagAndFiltersListHacksOrCheats()
+    {
+        var module = Module(Library());
+        var all = await Json(module.Games(Req("{}")));
+        var items = all.GetProperty("items").EnumerateArray().ToList();
+        var mana = Assert.Single(items, item => item.GetProperty("key").GetString() == "p:SNES/Mana" || item.GetProperty("title").GetString() == "Secret of Mana");
+        Assert.Equal("best", mana.GetProperty("hack").GetString());
+        Assert.False(mana.TryGetProperty("cheat", out _));
+        var chrono = Assert.Single(items, item => item.GetProperty("key").GetString() == "m:SNES/Chrono");
+        Assert.Equal("some", chrono.GetProperty("cheat").GetString());
+        Assert.False(chrono.TryGetProperty("hack", out _));
+
+        var hacks = await Json(module.Games(Req("""{"flag":"hack"}""")));
+        Assert.Equal(1, hacks.GetProperty("total").GetInt32());
+        Assert.Equal("Secret of Mana", hacks.GetProperty("items")[0].GetProperty("title").GetString());
+        var cheats = await Json(module.Games(Req("""{"flag":"cheat"}""")));
+        Assert.Equal(1, cheats.GetProperty("total").GetInt32());
+        Assert.Equal("m:SNES/Chrono", cheats.GetProperty("items")[0].GetProperty("key").GetString());
+        var none = await Json(module.Games(Req("""{"flag":"hack","system":"NES"}""")));
+        Assert.Equal(0, none.GetProperty("total").GetInt32());
+    }
+
     [Fact]
     public async Task GamesRouteGroupsSearchesAndCapsThePage()
     {

@@ -31,6 +31,7 @@
     devTotal: 0,
     allDevelopers: null,
     devOther: [],
+    flag: "",
     devOtherGames: 0,
     logos: { consoles: {}, developers: {} },
     logoAsked: { consoles: {}, developers: {} }
@@ -345,6 +346,10 @@
     return el("span", { class: "pill cheat", title: "Cheat or trainer ROM", text: "Cheat" });
   }
 
+  function hackPill() {
+    return el("span", { class: "pill hack", title: "Hacked ROM", text: "Hack" });
+  }
+
   function cardEl(item, opts) {
     var library = opts && opts.library;
     var card = el("div", { class: "card" + (library ? " library" : ""), tabindex: "0", "data-nav": "1", "data-open": item.key || "" });
@@ -371,6 +376,14 @@
         class: "cheat-badge",
         title: item.cheat === "best" ? "The best file is a cheat or trainer ROM" : "Some versions are cheat or trainer ROMs",
         text: "Cheat"
+      }));
+    }
+    if (item.hack) {
+      art.classList.add("has-hack");
+      art.appendChild(el("span", {
+        class: "hack-badge",
+        title: item.hack === "best" ? "The best file is a hacked ROM" : "Some versions are hacked ROMs",
+        text: "Hack"
       }));
     }
     var star = el("button", {
@@ -577,6 +590,11 @@
       limit: 48
     };
     if (developer) body.developer = developer;
+    // Hacks / Cheats review lists span every console unless a developer is chosen.
+    if (state.flag) {
+      body.flag = state.flag;
+      body.system = "";
+    }
     if (state.libraryView === "favorites") body.keys = state.favorites.slice();
     if (state.libraryView === "recent") body.keys = state.recent.slice();
     return body;
@@ -638,8 +656,9 @@
     var subTitle = el("h2");
     subTitle.appendChild(el("span", { class: "sub-name", text: developer ? (devInfo ? devInfo.name : developer) : (system || "Library") }));
     subTitle.appendChild(el("span", { class: "sub-sep", "aria-hidden": "true", text: "|" }));
-    var subGames = developer ? (devInfo && !state.query && state.libraryView === "all" ? devInfo.games : state.total) : (rowInfo ? rowInfo.games : state.total);
+    var subGames = state.flag ? state.total : developer ? (devInfo && !state.query && state.libraryView === "all" ? devInfo.games : state.total) : (rowInfo ? rowInfo.games : state.total);
     subTitle.appendChild(el("span", { class: "sub-count", text: gamesLabel(subGames) }));
+    if (state.flag) subTitle.appendChild(el("span", { class: "sub-flag pill " + state.flag, text: (state.flag === "hack" ? "Hacks" : "Cheats") + (developer ? "" : " · all consoles") }));
     sub.appendChild(subTitle);
     main.appendChild(sub);
     main.appendChild(libraryTools());
@@ -651,7 +670,8 @@
     if (!state.list.length) {
       var scope = developer ? "this developer" : "this console";
       var empty = "No games for " + scope + " yet.";
-      if (state.query) empty = "No games match that search.";
+      if (state.flag) empty = state.flag === "hack" ? "No hacked ROMs found." : "No cheat ROMs found.";
+      else if (state.query) empty = "No games match that search.";
       else if (state.libraryView === "favorites") empty = "No favorites for " + scope + " yet.";
       else if (state.libraryView === "recent") empty = "No recently played games for " + scope + " yet.";
       main.appendChild(el("div", { class: "empty", text: empty }));
@@ -1122,7 +1142,7 @@
     right.appendChild(wrap);
     var filter = el("button", {
       type: "button",
-      class: "icon-btn filter-btn" + (state.query ? " on" : ""),
+      class: "icon-btn filter-btn" + (state.query || state.flag ? " on" : ""),
       "data-nav": "1",
       "data-filter": "1",
       "aria-label": "Filter",
@@ -1429,7 +1449,15 @@
       var heading = el("h3", { text: fmt.versionName(version.file) || version.file || "ROM" });
       if (version.best) heading.appendChild(el("span", { class: "pill", text: "Best Experience" }));
       if (fmt.isCheatRom(version)) heading.appendChild(cheatPill());
+      if (fmt.isHackRom(version)) heading.appendChild(hackPill());
       info.appendChild(heading);
+      // Full original file name and tags, so a hack or cheat can be identified.
+      var fullName = String(version.file || "");
+      var cut = Math.max(fullName.lastIndexOf("/"), fullName.lastIndexOf("\\"));
+      if (cut >= 0) fullName = fullName.slice(cut + 1);
+      if (fullName) info.appendChild(el("p", { class: "tiny version-file", title: fullName, text: fullName }));
+      var tagList = Array.isArray(version.tags) && version.tags.length ? version.tags : fmt.fileTags(version.file || "");
+      if (tagList.length) info.appendChild(el("p", { class: "tiny version-tags", text: "Tags: " + tagList.join(" ") }));
       info.appendChild(el("p", { class: "tiny", text: fmt.joinParts([version.region, (version.ext || "").toUpperCase(), fmt.formatBytes(version.sizeBytes)]) }));
       var why = version.playable === false ? (version.reason || "Unavailable") : "";
       var play = el("button", {
@@ -1476,6 +1504,7 @@
           var span = el("span", { text: text });
           if (member.ks) span.appendChild(el("span", { class: "pill", text: "Best Experience" }));
           if (fmt.isCheatRom(member)) span.appendChild(cheatPill());
+          if (fmt.isHackRom(member)) span.appendChild(hackPill());
           label.appendChild(span);
           box.appendChild(label);
         });
@@ -1939,6 +1968,27 @@
     dialog.appendChild(el("h2", { text: "Filter" }));
     var field = el("input", { value: state.query || "", placeholder: "Name, genre, or year", "aria-label": "Filter games" });
     dialog.appendChild(field);
+    var pick = state.flag || "";
+    var flags = el("div", { class: "seg filter-flags", role: "group", "aria-label": "Show only" });
+    [["", "All ROMs"], ["hack", "Hacks"], ["cheat", "Cheats"]].forEach(function (pair) {
+      var chip = el("button", {
+        type: "button",
+        class: "chip" + (pick === pair[0] ? " active" : ""),
+        "data-flag": pair[0],
+        "aria-pressed": pick === pair[0] ? "true" : "false",
+        text: pair[1]
+      });
+      chip.addEventListener("click", function () {
+        pick = pair[0];
+        flags.querySelectorAll("[data-flag]").forEach(function (node) {
+          var on = node.getAttribute("data-flag") === pick;
+          node.classList.toggle("active", on);
+          node.setAttribute("aria-pressed", on ? "true" : "false");
+        });
+      });
+      flags.appendChild(chip);
+    });
+    dialog.appendChild(flags);
     var actions = el("div", { class: "dlg-actions" });
     var cancel = el("button", { type: "button", class: "text-btn", text: "Cancel" });
     var clear = el("button", { type: "button", class: "text-btn", text: "Clear" });
@@ -1954,16 +2004,17 @@
       unwatch();
       document.getElementById("modal").replaceChildren();
     }
-    function commit(value) {
+    function commit(value, flag) {
       state.query = String(value || "").trim();
+      state.flag = flag === "hack" || flag === "cheat" ? flag : "";
       var searchBox = document.getElementById("search");
       if (searchBox) searchBox.value = state.query;
       close();
       render();
     }
     cancel.addEventListener("click", close);
-    clear.addEventListener("click", function () { commit(""); });
-    apply.addEventListener("click", function () { commit(field.value); });
+    clear.addEventListener("click", function () { commit("", ""); });
+    apply.addEventListener("click", function () { commit(field.value, pick); });
     unwatch = watchDialog(cancel, apply, close);
   }
 
