@@ -316,6 +316,18 @@ public sealed class ArcadeCompatibilityService
         return ArcadeBiosCatalog.FallbackZip(romset);
     }
 
+    /// <summary>
+    /// The parent romset zips a clone or hack archive needs beside it, nearest parent first, or
+    /// an empty list when it needs none. FBNeo and MAME look for a parent set's files in the same
+    /// directory as the loaded archive, so the client has to download these next to the game zip.
+    /// Needs the pinned FBNeo DAT: the small fallback map only names BIOS zips, not parent sets.
+    /// </summary>
+    internal IReadOnlyList<string> ParentZips(string romset)
+    {
+        var catalog = GetBiosCatalog();
+        return catalog == null ? Array.Empty<string>() : catalog.ResolveParents(romset);
+    }
+
     private ArcadeBiosCatalog? GetBiosCatalog()
     {
         var stamp = FileStamp.From(_fbneoDatPath);

@@ -118,6 +118,93 @@ public class ArcadeBiosTests : IDisposable
     }
 
     [Fact]
+    public void Catalog_ResolvesParentChainAndStopsAtBios()
+    {
+        var dat = WriteDat(
+            """
+            <datafile>
+              <game name="neogeo" isbios="yes"></game>
+              <game name="dkong"></game>
+              <game name="dkchrmx" romof="dkong"></game>
+              <game name="dkongjr" romof="dkong"></game>
+              <game name="dkongjrj" romof="dkongjr"></game>
+              <game name="svc" romof="neogeo"></game>
+              <game name="svchack" romof="svc"></game>
+              <game name="pacman"></game>
+            </datafile>
+            """);
+        var catalog = ArcadeBiosCatalog.Load(dat);
+
+        // A hack names its parent set, which needs to sit beside it.
+        Assert.Equal(["dkong.zip"], catalog.ResolveParents("dkchrmx"));
+        // A clone of a clone gets the whole chain, nearest parent first.
+        Assert.Equal(["dkongjr.zip", "dkong.zip"], catalog.ResolveParents("dkongjrj"));
+        // A root set has no parent; an unknown set resolves to nothing rather than throwing.
+        Assert.Empty(catalog.ResolveParents("dkong"));
+        Assert.Empty(catalog.ResolveParents("pacman"));
+        Assert.Empty(catalog.ResolveParents("not-in-dat"));
+        Assert.Empty(catalog.ResolveParents(null));
+        // neogeo.zip is a BIOS, delivered through the BIOS folder, so the chain stops there:
+        // svc has no parent to download, and a hack of svc needs only svc.zip beside it.
+        Assert.Empty(catalog.ResolveParents("svc"));
+        Assert.Equal(["svc.zip"], catalog.ResolveParents("svchack"));
+    }
+
+    [Fact]
+    public async Task ArcadeCloneDetail_ListsParentArchiveBesideTheGameAndNeverABios()
+    {
+        var library = Path.Combine(_root, "Retro Games");
+        var hack = Path.Combine(library, "Arcade", "dkchrmx", "dkchrmx.zip");
+        var parent = Path.Combine(library, "Arcade", "dkong", "dkong.zip");
+        var svc = Path.Combine(library, "Arcade", "svc", "svc.zip");
+        var pacman = Path.Combine(library, "Arcade", "pacman", "pacman.zip");
+        WriteZip(hack);
+        WriteZip(parent);
+        WriteZip(svc);
+        WriteZip(pacman);
+        WriteZip(Path.Combine(library, ".bios", "Arcade", "neogeo.zip"));
+        var dat = WriteDat(
+            """
+            <datafile>
+              <game name="neogeo" isbios="yes"></game>
+              <game name="dkong"></game>
+              <game name="dkchrmx" romof="dkong"></game>
+              <game name="svc" romof="neogeo"></game>
+              <game name="pacman"></game>
+            </datafile>
+            """);
+        var service = new GamesService(
+            new FakeLibraryManager(
+            [
+                new VirtualFolderInfo
+                {
+                    Name = "Retro Games",
+                    ItemId = "lib-1",
+                    Locations = [library],
+                },
+            ]),
+            arcadeCompatibility: new ArcadeCompatibilityService(dat, Path.Combine(_root, "missing-mame.dat")));
+
+        var hackDetail = await service.GetGameAsync("lib-1", GamePathResolver.EncodeToken(Path.GetFullPath(hack)), null, CancellationToken.None);
+        var parentEntry = Assert.Single(hackDetail!.Parents!);
+        Assert.Equal("dkong.zip", parentEntry.FileName);
+        Assert.Equal(Path.GetFullPath(parent), Decode(parentEntry.Id));
+        Assert.Contains("/Bios/", parentEntry.Url, StringComparison.Ordinal);
+        Assert.EndsWith("/dkong.zip", parentEntry.Url, StringComparison.Ordinal);
+        // A parent set is not a BIOS: the client writes parents beside the game zip instead.
+        Assert.Empty(hackDetail.Bios);
+
+        var svcDetail = await service.GetGameAsync("lib-1", GamePathResolver.EncodeToken(Path.GetFullPath(svc)), null, CancellationToken.None);
+        Assert.Equal("neogeo.zip", Assert.Single(svcDetail!.Bios).FileName);
+        Assert.Null(svcDetail.Parents);
+
+        // A plain set's detail is exactly what it was: no parent list at all.
+        var pacmanDetail = await service.GetGameAsync("lib-1", GamePathResolver.EncodeToken(Path.GetFullPath(pacman)), null, CancellationToken.None);
+        Assert.Null(pacmanDetail!.Parents);
+        Assert.Empty(pacmanDetail.Bios);
+    }
+
+    [Fact]
     public void BiosFilenameRoute_ReturnsNeogeoZipAndKeepsTheTokenRoute()
     {
         Directory.CreateDirectory(_root);
@@ -150,6 +237,14 @@ public class ArcadeBiosTests : IDisposable
     {
         Assert.True(catalog.TryResolve(romset, out var zip));
         return zip;
+    }
+
+    private string WriteDat(string xml)
+    {
+        var path = Path.Combine(_root, "fbneo-" + Guid.NewGuid().ToString("N") + ".dat");
+        Directory.CreateDirectory(_root);
+        File.WriteAllText(path, xml);
+        return path;
     }
 
     private static void WriteZip(string path)

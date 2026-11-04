@@ -259,6 +259,17 @@ public class GameDetail : GameSummary
     [JsonPropertyName("bios")]
     public List<GameBios> Bios { get; set; } = new();
 
+    /// <summary>
+    /// Parent romset archives a clone or hack needs in the same folder as its own archive, nearest
+    /// parent first. Arcade cores look a set's parent files up beside the loaded zip, so a hack
+    /// such as dkchrmx cannot boot without dkong.zip next to it. These are ordinary ROM archives,
+    /// not BIOS: they belong next to the game, and BIOS zips (neogeo/pgm/skns) are never listed
+    /// here. Omitted when the set has no parent, so the response for a plain set is unchanged.
+    /// </summary>
+    [JsonPropertyName("parents")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public List<GameBios>? Parents { get; set; }
+
     // Optional metadata from the libretro database, keyed by ROM CRC. Coverage is uneven, so
     // every field is nullable and omitted from JSON when absent; clients render only what is
     // present.
@@ -312,7 +323,9 @@ public class GameBios
     public long SizeBytes { get; set; }
 
     /// <summary>
-    /// Download path ending in the BIOS file name, for example <c>.../Bios/{id}/neogeo.zip</c>.
+    /// Download path ending in the file name the core requires, for example
+    /// <c>.../Bios/{id}/neogeo.zip</c>. Parent romsets in
+    /// <see cref="GameDetail.Parents"/> use the same endpoint.
     /// </summary>
     [JsonPropertyName("url")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
