@@ -664,6 +664,7 @@ public class GamesService
         }
         var core = overrideCore ?? arcade?.RecommendedCore ?? resolution.SystemCore;
         var bios = GetBiosFiles(resolution.Library.Id, resolution.SystemDir, resolution.RomPath, resolution.SystemCore);
+        var parents = GetParentFiles(resolution.Library.Id, resolution.SystemDir, resolution.RomPath, resolution.SystemCore, bios);
         var title = ResolveTitle(resolution.SystemDir, resolution.RomPath);
 
         var archiveName = Path.GetFileName(resolution.RomPath);
@@ -696,6 +697,7 @@ public class GamesService
             FileName = servedName,
             SizeBytes = servedSize,
             Bios = bios,
+            Parents = parents.Count == 0 ? null : parents,
             RecommendedCore = arcade?.RecommendedCore,
             AvailableCores = arcade?.AvailableCores.ToList(),
             CoreCompatibilityReason = arcade?.Reason,
@@ -1306,6 +1308,68 @@ public class GamesService
         }
 
         return bios;
+    }
+
+    /// <summary>
+    /// Parent romset archives a clone or hack needs downloaded beside its own archive, nearest
+    /// parent first. FBNeo and MAME read a parent set's files from the same directory as the
+    /// loaded zip, so the client has to place these there; they are deliberately not folded into
+    /// the BIOS list, which the client writes to the shared system directory instead.
+    /// The DAT decides the chain and stops at a BIOS set, so neogeo.zip is never repeated here.
+    /// A parent that is already listed as BIOS, missing from this library, or not a ZIP is left
+    /// out rather than failing the game: the archive is still worth launching on its own.
+    /// </summary>
+    private List<GameBios> GetParentFiles(
+        string libraryId,
+        string? systemDir,
+        string romPath,
+        string systemCore,
+        List<GameBios> bios)
+    {
+        var parents = new List<GameBios>();
+        if (systemDir == null ||
+            !IsArcadeFamilyCore(systemCore) ||
+            !string.Equals(Path.GetExtension(romPath), ".zip", StringComparison.OrdinalIgnoreCase))
+        {
+            return parents;
+        }
+
+        var romset = Path.GetFileNameWithoutExtension(romPath);
+        var chain = _arcadeCompatibility?.ParentZips(romset) ?? Array.Empty<string>();
+        foreach (var zipName in chain)
+        {
+            if (bios.Any(item => string.Equals(item.FileName, zipName, StringComparison.OrdinalIgnoreCase)))
+            {
+                continue;
+            }
+
+            // One folder per set is the library convention (Arcade/<set>/<set>.zip), so look
+            // there first and fall back to a loose archive at the top of the system folder.
+            var found = FindFile(FindSetDirectory(systemDir, zipName), zipName) ?? FindFile(systemDir, zipName);
+            if (found == null)
+            {
+                continue;
+            }
+
+            AddBios(parents, libraryId, found, zipName);
+        }
+
+        return parents;
+    }
+
+    /// <summary>The per-set folder holding <paramref name="zipName"/>, matched case-insensitively.</summary>
+    private static string? FindSetDirectory(string systemDir, string zipName)
+    {
+        var set = Path.GetFileNameWithoutExtension(zipName);
+        foreach (var directory in SafeEnumerateDirectories(systemDir))
+        {
+            if (string.Equals(Path.GetFileName(directory), set, StringComparison.OrdinalIgnoreCase))
+            {
+                return directory;
+            }
+        }
+
+        return null;
     }
 
     private string? SharedBiosZipName(string romPath)

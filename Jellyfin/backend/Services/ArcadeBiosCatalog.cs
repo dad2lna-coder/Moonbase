@@ -3,10 +3,11 @@ using System.Xml;
 namespace Moonfin.Server.Services;
 
 /// <summary>
-/// Which shared arcade BIOS zip a romset needs. FBNeo's DAT (romof chain, or the Neo Geo /
-/// PGM / Super Kaneko Nova driver when the chain does not name a BIOS) wins when it is
-/// installed. Otherwise a small romset map is used, and every Neo Geo set in that map
-/// defaults to neogeo.zip. Other zips in the BIOS folder are not returned.
+/// Which shared arcade BIOS zip a romset needs, and which parent romsets a clone or hack
+/// archive needs beside it. FBNeo's DAT (romof chain, or the Neo Geo / PGM / Super Kaneko Nova
+/// driver when the chain does not name a BIOS) wins when it is installed. Otherwise a small
+/// romset map is used, and every Neo Geo set in that map defaults to neogeo.zip. Other zips in
+/// the BIOS folder are not returned.
 /// </summary>
 internal sealed class ArcadeBiosCatalog
 {
@@ -63,6 +64,43 @@ internal sealed class ArcadeBiosCatalog
         return true;
     }
 
+    /// <summary>
+    /// The parent romset zips a clone or hack archive needs in its own directory, nearest
+    /// parent first. FBNeo looks for a parent set's files beside the loaded archive, so a hack
+    /// such as dkchrmx cannot boot without dkong.zip sitting next to it. The walk follows the
+    /// DAT's romof chain and stops at anything this catalog classifies as a BIOS (neogeo, pgm,
+    /// skns, or a set the DAT marks isbios), because those are delivered through the BIOS
+    /// folder instead and must not be downloaded a second time as a parent. Empty when the set
+    /// is unknown, needs no parent, or the chain cannot be followed.
+    /// </summary>
+    public IReadOnlyList<string> ResolveParents(string? romset)
+    {
+        var name = Normalize(romset);
+        if (name.Length == 0 || !_sets.TryGetValue(name, out var entry))
+        {
+            return Array.Empty<string>();
+        }
+
+        var parents = new List<string>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { name };
+        while (!string.IsNullOrEmpty(entry.Romof))
+        {
+            var parent = Normalize(entry.Romof);
+            if (parent.Length == 0 || !seen.Add(parent) || IsBiosSet(parent))
+            {
+                break;
+            }
+
+            parents.Add(parent + ".zip");
+            if (!_sets.TryGetValue(parent, out entry))
+            {
+                break;
+            }
+        }
+
+        return parents;
+    }
+
     public static ArcadeBiosCatalog? TryLoad(string path)
     {
         try
@@ -100,7 +138,10 @@ internal sealed class ArcadeBiosCatalog
                 continue;
             }
 
-            sets[name] = new Entry(Normalize(reader.GetAttribute("romof")), reader.GetAttribute("sourcefile"));
+            sets[name] = new Entry(
+                Normalize(reader.GetAttribute("romof")),
+                reader.GetAttribute("sourcefile"),
+                string.Equals(reader.GetAttribute("isbios"), "yes", StringComparison.OrdinalIgnoreCase));
         }
 
         return new ArcadeBiosCatalog(sets);
@@ -188,7 +229,11 @@ internal sealed class ArcadeBiosCatalog
         return Path.GetFileNameWithoutExtension(name.Trim()).ToLowerInvariant();
     }
 
-    private readonly record struct Entry(string Romof, string? Source);
+    /// <summary>True for the shared BIOS zips and for any set the DAT marks as a BIOS.</summary>
+    private bool IsBiosSet(string name) =>
+        IsSharedBios(name) || (_sets.TryGetValue(name, out var entry) && entry.IsBios);
+
+    private readonly record struct Entry(string Romof, string? Source, bool IsBios);
 
     private static readonly Dictionary<string, string> Fallback = new(StringComparer.OrdinalIgnoreCase)
     {
