@@ -106,6 +106,9 @@ public class GamesServiceTests : IDisposable
         Assert.Equal(
             "thumbnailReady",
             document.RootElement.GetProperty("entries")[0].GetProperty("artwork").GetProperty("boxart").GetProperty("state").GetString());
+        Assert.False(document.RootElement.TryGetProperty("total", out _));
+        Assert.False(document.RootElement.TryGetProperty("offset", out _));
+        Assert.False(document.RootElement.TryGetProperty("limit", out _));
     }
 
     [Fact]
@@ -803,6 +806,173 @@ public class GamesServiceTests : IDisposable
         }
 
         return System.Text.Encoding.UTF8.GetString(Convert.FromBase64String(padded));
+    }
+
+    [Fact]
+    public void GetGamesPage_BoundariesTotalAndStableOrder_UnpagedStaysTheFullList()
+    {
+        var libraryRoot = Path.Combine(_root, "Paged");
+        var nes = Path.Combine(libraryRoot, "NES");
+        Directory.CreateDirectory(nes);
+        // Written out of title order, so a pass that echoed the directory would fail.
+        File.WriteAllBytes(Path.Combine(nes, "zelda.nes"), [1]);
+        File.WriteAllBytes(Path.Combine(nes, "mario.nes"), [2]);
+        File.WriteAllBytes(Path.Combine(nes, "metroid.nes"), [3]);
+        File.WriteAllBytes(Path.Combine(nes, "Same.nes"), [4]);
+        File.WriteAllBytes(Path.Combine(nes, "Same.zip"), [5]);
+
+        var service = new GamesService(new FakeLibraryManager(
+        [
+            new VirtualFolderInfo { Name = "Retro Games", ItemId = "lib-page", Locations = [libraryRoot] },
+        ]));
+
+        var all = service.GetGames("lib-page", "NES");
+        Assert.Equal(["mario", "metroid", "Same", "Same", "zelda"], all.Select(game => game.Title).ToArray());
+        var sameIds = all.Where(game => game.Title == "Same").Select(game => game.Id).ToArray();
+        Assert.Equal(2, sameIds.Length);
+        Assert.True(string.CompareOrdinal(sameIds[0], sameIds[1]) < 0);
+
+        // Neither parameter: the list itself, not the page envelope.
+        Assert.Same(all, GamesService.GamesResponse(all, null, null));
+        var disabled = GamesService.GamesResponse(Array.Empty<GameSummary>(), null, null);
+        Assert.Empty(Assert.IsAssignableFrom<IReadOnlyList<GameSummary>>(disabled));
+
+        var first = Assert.IsType<GameListPage>(GamesService.GamesResponse(all, 0, 2));
+        Assert.Equal(5, first.Total);
+        Assert.Equal(0, first.Offset);
+        Assert.Equal(2, first.Limit);
+        Assert.Equal(["mario", "metroid"], first.Items.Select(game => game.Title).ToArray());
+
+        var middle = service.GetGamesPage("lib-page", "NES", null, 2, 2);
+        Assert.Equal(["Same", "Same"], middle.Items.Select(game => game.Title).ToArray());
+        Assert.Equal(sameIds, middle.Items.Select(game => game.Id).ToArray());
+
+        var last = service.GetGamesPage("lib-page", "NES", null, 4, 2);
+        Assert.Equal(["zelda"], last.Items.Select(game => game.Title).ToArray());
+        Assert.Equal(5, last.Total);
+        Assert.Equal(4, last.Offset);
+        Assert.Equal(2, last.Limit);
+
+        var pastEnd = service.GetGamesPage("lib-page", "NES", null, 9, 2);
+        Assert.Empty(pastEnd.Items);
+        Assert.Equal(5, pastEnd.Total);
+        Assert.Equal(9, pastEnd.Offset);
+        Assert.Equal(2, pastEnd.Limit);
+
+        var negative = service.GetGamesPage("lib-page", "NES", null, -4, 1);
+        Assert.Equal(0, negative.Offset);
+        Assert.Equal("mario", Assert.Single(negative.Items).Title);
+
+        // Offset alone uses the default limit; limit alone starts at the first game.
+        var offsetOnly = service.GetGamesPage("lib-page", "NES", null, 1, null);
+        Assert.Equal(1, offsetOnly.Offset);
+        Assert.Equal(GamesService.DefaultGamesPageLimit, offsetOnly.Limit);
+        Assert.Equal(4, offsetOnly.Items.Count);
+
+        var limitOnly = service.GetGamesPage("lib-page", "NES", null, null, 3);
+        Assert.Equal(0, limitOnly.Offset);
+        Assert.Equal(3, limitOnly.Limit);
+        Assert.Equal(["mario", "metroid", "Same"], limitOnly.Items.Select(game => game.Title).ToArray());
+
+        var zeroLimit = service.GetGamesPage("lib-page", "NES", null, 0, 0);
+        Assert.Equal(GamesService.DefaultGamesPageLimit, zeroLimit.Limit);
+        Assert.Equal(5, zeroLimit.Items.Count);
+
+        var hugeLimit = service.GetGamesPage("lib-page", "NES", null, 0, 10_000);
+        Assert.Equal(GamesService.MaxGamesPageLimit, hugeLimit.Limit);
+        Assert.Equal(5, hugeLimit.Items.Count);
+
+        var disabledPage = Assert.IsType<GameListPage>(
+            GamesService.GamesResponse(Array.Empty<GameSummary>(), 0, 100));
+        Assert.Equal(0, disabledPage.Total);
+        Assert.Empty(disabledPage.Items);
+        Assert.Equal(100, disabledPage.Limit);
+
+        List<string> Walk()
+        {
+            var ids = new List<string>();
+            for (var offset = 0; offset < all.Count; offset += 2)
+            {
+                ids.AddRange(service.GetGamesPage("lib-page", "NES", null, offset, 2).Items.Select(game => game.Id));
+            }
+
+            return ids;
+        }
+
+        var walked = Walk();
+        Assert.Equal(all.Select(game => game.Id), walked);
+        Assert.Equal(walked, Walk());
+
+        var pageJson = JsonSerializer.Serialize(first);
+        Assert.Contains("\"total\":5", pageJson);
+        Assert.Contains("\"offset\":0", pageJson);
+        Assert.Contains("\"limit\":2", pageJson);
+        Assert.Contains("\"items\"", pageJson);
+    }
+
+    [Fact]
+    public void PageArtworkManifest_FollowsTheGamePage_AndOmitsPagingWhenUnpaged()
+    {
+        var games = new List<GameSummary>
+        {
+            new() { Id = "b", Title = "Beta" },
+            new() { Id = "a", Title = "Alpha" },
+            new() { Id = "c", Title = "Gamma" },
+        };
+        // Catalog order is not the game order, and one id is not in the library at all.
+        var catalog = new List<GameArtworkManifestEntry>
+        {
+            new() { GameId = "c" },
+            new() { GameId = "missing-from-page" },
+            new() { GameId = "a" },
+            new() { GameId = "a" },
+        };
+
+        var unpaged = GamesService.PageArtworkManifest("gen-1", games, catalog, null, null);
+        Assert.Equal(["c", "missing-from-page", "a", "a"], unpaged.Entries.Select(entry => entry.GameId).ToArray());
+        Assert.Null(unpaged.Total);
+        Assert.Null(unpaged.Offset);
+        Assert.Null(unpaged.Limit);
+        var unpagedJson = JsonSerializer.Serialize(unpaged);
+        Assert.DoesNotContain("\"total\"", unpagedJson);
+        Assert.DoesNotContain("\"offset\"", unpagedJson);
+        Assert.DoesNotContain("\"limit\"", unpagedJson);
+        Assert.Equal("gen-1", unpaged.Generation);
+
+        // Window is b, a. b has no art; the duplicate "a" keeps the first catalog entry.
+        var page = GamesService.PageArtworkManifest("gen-1", games, catalog, 0, 2);
+        Assert.Equal(["a"], page.Entries.Select(entry => entry.GameId).ToArray());
+        Assert.Same(catalog[2], page.Entries[0]);
+        Assert.Equal(3, page.Total);
+        Assert.Equal(0, page.Offset);
+        Assert.Equal(2, page.Limit);
+
+        var last = GamesService.PageArtworkManifest("gen-1", games, catalog, 2, 2);
+        Assert.Equal(["c"], last.Entries.Select(entry => entry.GameId).ToArray());
+        Assert.Equal(3, last.Total);
+        Assert.Equal(2, last.Offset);
+
+        var pastEnd = GamesService.PageArtworkManifest("gen-1", games, catalog, 5, 2);
+        Assert.Empty(pastEnd.Entries);
+        Assert.Equal(3, pastEnd.Total);
+        Assert.Equal(5, pastEnd.Offset);
+        Assert.Equal(2, pastEnd.Limit);
+
+        // A later page cannot reshuffle: the ids are the game list, not catalog order.
+        var walked = new List<string>();
+        for (var offset = 0; offset < games.Count; offset++)
+        {
+            walked.AddRange(GamesService.PageArtworkManifest("gen-1", games, catalog, offset, 1).Entries.Select(entry => entry.GameId));
+        }
+
+        Assert.Equal(["a", "c"], walked);
+        var again = new List<string>();
+        for (var offset = 0; offset < games.Count; offset++)
+        {
+            again.AddRange(GamesService.PageArtworkManifest("gen-1", games, catalog, offset, 1).Entries.Select(entry => entry.GameId));
+        }
+
+        Assert.Equal(walked, again);
     }
 
     public void Dispose()

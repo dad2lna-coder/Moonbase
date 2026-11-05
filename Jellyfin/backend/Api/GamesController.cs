@@ -184,6 +184,8 @@ public class GamesController : ControllerBase
         [FromRoute] string libraryId,
         [FromQuery] string? system,
         [FromQuery] string? generation,
+        [FromQuery] int? offset,
+        [FromQuery] int? limit,
         CancellationToken cancellationToken)
     {
         if (!GamesEnabled() || string.IsNullOrWhiteSpace(system))
@@ -201,11 +203,10 @@ public class GamesController : ControllerBase
         // query parameter (below) is the one an already-shipped old client actually sends and is
         // therefore authoritative; the `ETag` header is emitted for standard-HTTP-cache clients
         // but nothing in this codebase currently reads it back via If-None-Match. Consolidating
-        // onto one (dropping the query param once no supported client needs it, or wiring up
-        // If-None-Match instead) is deferred: it needs to land together with manifest pagination
-        // (Task D8, which changes what a "page" of this response even is) and a separate pending
-        // change to when `Generation` is bumped. Removing either mechanism unilaterally before
-        // those land would be an unreviewed protocol break for the old client.
+        // onto one is still deferred — it has to land with the pending change to when
+        // `Generation` is bumped. Pagination does not change that: a matching generation is
+        // 304 before any page is sliced, so older clients keep working. A paged client omits
+        // `generation` and sends `offset`/`limit` instead.
         var currentGeneration = ArtworkGeneration(artwork.System.Generation);
         Response.Headers["ETag"] = "\"" + currentGeneration + "\"";
         if (string.Equals(generation, currentGeneration, StringComparison.Ordinal))
@@ -213,7 +214,7 @@ public class GamesController : ControllerBase
             return StatusCode(StatusCodes.Status304NotModified);
         }
 
-        var entries = artwork.Entries
+        var catalogEntries = artwork.Entries
             .GroupBy(entry => entry.GameId, StringComparer.Ordinal)
             .Select(group => new GameArtworkManifestEntry
             {
@@ -224,7 +225,14 @@ public class GamesController : ControllerBase
                     StringComparer.Ordinal),
             })
             .ToList();
-        return Ok(new GameArtworkManifest { Generation = currentGeneration, Entries = entries });
+        if (!GamesService.IsGamesPageRequested(offset, limit))
+        {
+            return Ok(new GameArtworkManifest { Generation = currentGeneration, Entries = catalogEntries });
+        }
+
+        // Same ordered id list as GET .../Games, so this page of art belongs to that page of games.
+        var orderedGames = _gamesService.GetGames(libraryId, system, this.GetUserIdFromClaims());
+        return Ok(GamesService.PageArtworkManifest(currentGeneration, orderedGames, catalogEntries, offset, limit));
     }
 
     /// <summary>Promotes already cataloged artwork work in client-provided priority order.</summary>
@@ -396,21 +404,26 @@ public class GamesController : ControllerBase
         };
     }
 
-    /// <summary>Lists the games inside a library, optionally filtered to one system.</summary>
+    /// <summary>
+    /// Lists the games inside a library, optionally filtered to one system.
+    /// With <paramref name="offset"/> or <paramref name="limit"/>, returns one stable page
+    /// (<c>{ items, total, offset, limit }</c>, title then id). With neither, returns the
+    /// full list as a JSON array so older clients and the web keep working.
+    /// </summary>
     [HttpGet("{libraryId}/Games")]
     [Authorize]
     [Produces(MediaTypeNames.Application.Json)]
     [ProducesResponseType(StatusCodes.Status200OK)]
-    public ActionResult<IEnumerable<GameSummary>> GetGames(
+    public ActionResult GetGames(
         [FromRoute] string libraryId,
-        [FromQuery] string? system)
+        [FromQuery] string? system,
+        [FromQuery] int? offset,
+        [FromQuery] int? limit)
     {
-        if (!GamesEnabled())
-        {
-            return Ok(Array.Empty<GameSummary>());
-        }
-
-        return Ok(_gamesService.GetGames(libraryId, system, this.GetUserIdFromClaims()));
+        var games = GamesEnabled()
+            ? _gamesService.GetGames(libraryId, system, this.GetUserIdFromClaims())
+            : Array.Empty<GameSummary>();
+        return Ok(GamesService.GamesResponse(games, offset, limit));
     }
 
     /// <summary>Resolves a single game's full detail (ROM, core, BIOS files).</summary>

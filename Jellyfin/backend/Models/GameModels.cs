@@ -134,6 +134,24 @@ public class GameArtworkManifest
 
     [JsonPropertyName("entries")]
     public List<GameArtworkManifestEntry> Entries { get; set; } = new();
+
+    /// <summary>
+    /// Games in the ordered library this manifest was windowed over. Omitted on the unpaged
+    /// response so older clients still see <c>{ generation, entries }</c>.
+    /// </summary>
+    [JsonPropertyName("total")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? Total { get; set; }
+
+    /// <summary>Start of the game-list window. See <see cref="Total"/>.</summary>
+    [JsonPropertyName("offset")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? Offset { get; set; }
+
+    /// <summary>Length of the game-list window. See <see cref="Total"/>.</summary>
+    [JsonPropertyName("limit")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? Limit { get; set; }
 }
 
 /// <summary>Ordered client hint that promotes existing artwork work without creating downloads.</summary>
@@ -204,6 +222,25 @@ public class GameSummary
 
     [JsonPropertyName("fileName")]
     public string FileName { get; set; } = string.Empty;
+}
+
+/// <summary>
+/// One window of <see cref="GameSummary"/> rows. Returned only when the games route is called
+/// with <c>offset</c> or <c>limit</c>; otherwise that route stays a bare array.
+/// </summary>
+public class GameListPage
+{
+    [JsonPropertyName("items")]
+    public List<GameSummary> Items { get; set; } = new();
+
+    [JsonPropertyName("total")]
+    public int Total { get; set; }
+
+    [JsonPropertyName("offset")]
+    public int Offset { get; set; }
+
+    [JsonPropertyName("limit")]
+    public int Limit { get; set; }
 }
 
 /// <summary>Full detail for a game, including BIOS files needed by its core.</summary>

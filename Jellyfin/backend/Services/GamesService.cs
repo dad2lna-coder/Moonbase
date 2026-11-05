@@ -54,6 +54,15 @@ public class GamesService
     public const long MaxExtractedRomBytes = 512L * 1024 * 1024;
 
     /// <summary>
+    /// Page size used when a client asks for a window but omits <c>limit</c>, or sends one
+    /// below 1. Large enough to fill a TV grid, small enough to parse on a Fire TV.
+    /// </summary>
+    public const int DefaultGamesPageLimit = 100;
+
+    /// <summary>Ceiling for a requested page, so a paged call cannot ask for the whole library.</summary>
+    public const int MaxGamesPageLimit = 500;
+
+    /// <summary>
     /// Extracts the playable ROM from a single-ROM .zip/.7z into memory. The archive on disk is left
     /// untouched. MAME archives bypass this method and are streamed intact. Prefers an entry with a
     /// recognized ROM extension, otherwise the largest file. Returns null when the archive holds no
@@ -566,7 +575,134 @@ public class GamesService
 
         return result
             .OrderBy(g => g.Title, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(g => g.Id, StringComparer.Ordinal)
             .ToList();
+    }
+
+    /// <summary>True when the caller asked for a window. Absent parameters keep the unpaged list.</summary>
+    public static bool IsGamesPageRequested(int? offset, int? limit) =>
+        offset.HasValue || limit.HasValue;
+
+    /// <summary>
+    /// Clamps a requested window. A missing or non-positive limit becomes
+    /// <see cref="DefaultGamesPageLimit"/>; a limit above <see cref="MaxGamesPageLimit"/>
+    /// is capped. A negative offset starts at the first game.
+    /// </summary>
+    public static (int Offset, int Limit) NormalizeGamesPage(int? offset, int? limit)
+    {
+        var normalizedOffset = offset.GetValueOrDefault(0);
+        if (normalizedOffset < 0)
+        {
+            normalizedOffset = 0;
+        }
+
+        var normalizedLimit = limit.GetValueOrDefault(DefaultGamesPageLimit);
+        if (normalizedLimit < 1)
+        {
+            normalizedLimit = DefaultGamesPageLimit;
+        }
+        else if (normalizedLimit > MaxGamesPageLimit)
+        {
+            normalizedLimit = MaxGamesPageLimit;
+        }
+
+        return (normalizedOffset, normalizedLimit);
+    }
+
+    /// <summary>
+    /// The games route body. No page parameters returns <paramref name="ordered"/> unchanged
+    /// (a JSON array). Either parameter returns a <see cref="GameListPage"/>.
+    /// </summary>
+    public static object GamesResponse(IReadOnlyList<GameSummary> ordered, int? offset, int? limit) =>
+        IsGamesPageRequested(offset, limit) ? PageGames(ordered, offset, limit) : ordered;
+
+    /// <summary>Slices an already title-then-id ordered game list. The window is deterministic.</summary>
+    public static GameListPage PageGames(IReadOnlyList<GameSummary> ordered, int? offset, int? limit)
+    {
+        var (pageOffset, pageLimit) = NormalizeGamesPage(offset, limit);
+        var total = ordered.Count;
+        if (pageOffset >= total)
+        {
+            return new GameListPage
+            {
+                Items = new List<GameSummary>(),
+                Total = total,
+                Offset = pageOffset,
+                Limit = pageLimit,
+            };
+        }
+
+        var count = Math.Min(pageLimit, total - pageOffset);
+        var items = new List<GameSummary>(count);
+        for (var i = 0; i < count; i++)
+        {
+            items.Add(ordered[pageOffset + i]);
+        }
+
+        return new GameListPage
+        {
+            Items = items,
+            Total = total,
+            Offset = pageOffset,
+            Limit = pageLimit,
+        };
+    }
+
+    /// <summary>One page of <see cref="GetGames(string, string?, Guid?)"/>, in that method's order.</summary>
+    public GameListPage GetGamesPage(string libraryId, string? systemId, Guid? userId, int? offset, int? limit) =>
+        PageGames(GetGames(libraryId, systemId, userId), offset, limit);
+
+    /// <summary>
+    /// Manifest window over the same ordered game ids as <see cref="PageGames"/>. Games in the
+    /// window with no catalog entry are skipped; <see cref="GameArtworkManifest.Total"/> is still
+    /// the game count, so a page of art lines up with the games page. With neither
+    /// <paramref name="offset"/> nor <paramref name="limit"/>, the catalog order is returned
+    /// unchanged and the paging fields stay unset.
+    /// </summary>
+    public static GameArtworkManifest PageArtworkManifest(
+        string generation,
+        IReadOnlyList<GameSummary> orderedGames,
+        IReadOnlyList<GameArtworkManifestEntry> catalogEntries,
+        int? offset,
+        int? limit)
+    {
+        if (!IsGamesPageRequested(offset, limit))
+        {
+            return new GameArtworkManifest
+            {
+                Generation = generation,
+                Entries = catalogEntries.ToList(),
+            };
+        }
+
+        var byGame = new Dictionary<string, GameArtworkManifestEntry>(StringComparer.Ordinal);
+        foreach (var entry in catalogEntries)
+        {
+            // First entry wins, matching GroupBy on the catalog before this is called.
+            if (!byGame.ContainsKey(entry.GameId))
+            {
+                byGame[entry.GameId] = entry;
+            }
+        }
+
+        var page = PageGames(orderedGames, offset, limit);
+        var entries = new List<GameArtworkManifestEntry>(page.Items.Count);
+        foreach (var game in page.Items)
+        {
+            if (byGame.TryGetValue(game.Id, out var entry))
+            {
+                entries.Add(entry);
+            }
+        }
+
+        return new GameArtworkManifest
+        {
+            Generation = generation,
+            Entries = entries,
+            Total = page.Total,
+            Offset = page.Offset,
+            Limit = page.Limit,
+        };
     }
 
     /// <summary>
@@ -931,6 +1067,7 @@ public class GamesService
 
         return result
             .OrderBy(game => game.Title, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(game => game.Id, StringComparer.Ordinal)
             .ToList();
     }
 
