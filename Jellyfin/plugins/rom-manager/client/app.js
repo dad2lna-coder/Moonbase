@@ -34,7 +34,10 @@
     flag: "",
     devOtherGames: 0,
     logos: { consoles: {}, developers: {} },
-    logoAsked: { consoles: {}, developers: {} }
+    logoAsked: { consoles: {}, developers: {} },
+    bucket: "",
+    letter: "",
+    bucketCounts: null
   };
 
   var NAV = [
@@ -571,6 +574,64 @@
     return null;
   }
 
+  // Same six ranges the server counts. The id is what we send back; the label
+  // is only for the tile. A system over this many games opens on the tiles.
+  var RANGE_BUCKETS = [
+    ["#-D", "# – D"],
+    ["E-H", "E – H"],
+    ["I-L", "I – L"],
+    ["M-P", "M – P"],
+    ["Q-S", "Q – S"],
+    ["T-Z", "T – Z"]
+  ];
+  var BUCKET_OVER = 1000;
+
+  function bucketLabel(id) {
+    var rows = state.bucketCounts || [];
+    for (var i = 0; i < rows.length; i++) {
+      if (rows[i] && rows[i].id === id && rows[i].label) return String(rows[i].label);
+    }
+    for (var j = 0; j < RANGE_BUCKETS.length; j++) {
+      if (RANGE_BUCKETS[j][0] === id) return RANGE_BUCKETS[j][1];
+    }
+    return id;
+  }
+
+  function bucketGames(id) {
+    var rows = state.bucketCounts || [];
+    for (var i = 0; i < rows.length; i++) {
+      if (rows[i] && rows[i].id === id) return Number(rows[i].games) || 0;
+    }
+    return 0;
+  }
+
+  function hasBucketCounts(rows) {
+    if (!rows || !rows.length) return false;
+    for (var i = 0; i < RANGE_BUCKETS.length; i++) {
+      var found = false;
+      for (var j = 0; j < rows.length; j++) {
+        if (rows[j] && rows[j].id === RANGE_BUCKETS[i][0]) found = true;
+      }
+      if (!found) return false;
+    }
+    return true;
+  }
+
+  function libraryFiltered() {
+    return !!(chosenDeveloper() || state.query || state.letter || state.flag || state.libraryView !== "all");
+  }
+
+  function wantsBucketPicker() {
+    if (state.bucket || libraryFiltered()) return false;
+    var row = consoleRow(chosenConsole());
+    return !!(row && Number(row.games) > BUCKET_OVER);
+  }
+
+  function clearBucket() {
+    state.bucket = "";
+    state.bucketCounts = null;
+  }
+
   function browseHead() {
     var head = el("div", { class: "page-head browse-head" });
     var title = el("h1");
@@ -580,16 +641,19 @@
     return head;
   }
 
-  function libraryBody(offset) {
+  function libraryBody(offset, probe) {
     var developer = chosenDeveloper();
     var body = {
       system: developer ? "" : (state.consoleName || ""),
       q: state.query || "",
       sort: state.sort || "title",
       offset: offset || 0,
-      limit: 48
+      limit: probe ? 1 : 48
     };
     if (developer) body.developer = developer;
+    if (state.bucket) body.bucket = state.bucket;
+    if (state.letter) body.letter = state.letter;
+    if (probe) body.includeBuckets = 1;
     // Hacks / Cheats review lists span every console unless a developer is chosen.
     if (state.flag) {
       body.flag = state.flag;
@@ -624,6 +688,18 @@
       return;
     }
     try {
+      if (wantsBucketPicker()) {
+        var probe = await api("games", libraryBody(0, true));
+        if (token !== state.token) return;
+        state.indexing = !!probe.indexing;
+        if (wantsBucketPicker() && hasBucketCounts(probe.buckets) && Number(probe.total) > BUCKET_OVER) {
+          state.bucketCounts = probe.buckets;
+          state.list = [];
+          state.total = probe.total || 0;
+          drawLibrary(main);
+          return;
+        }
+      }
       var result = await api("games", libraryBody(0));
       if (token !== state.token) return;
       var items = result.items || [];
@@ -655,11 +731,25 @@
     else if (system) sub.appendChild(logoSlot("consoles", system, "sub-logo", [consoleBadge(system, "console-badge")]));
     var subTitle = el("h2");
     subTitle.appendChild(el("span", { class: "sub-name", text: developer ? (devInfo ? devInfo.name : developer) : (system || "Library") }));
+    if (state.bucket) {
+      subTitle.appendChild(el("span", { class: "sub-sep", "aria-hidden": "true", text: "|" }));
+      subTitle.appendChild(el("span", { class: "sub-range", text: bucketLabel(state.bucket) }));
+    }
     subTitle.appendChild(el("span", { class: "sub-sep", "aria-hidden": "true", text: "|" }));
-    var subGames = state.flag ? state.total : developer ? (devInfo && !state.query && state.libraryView === "all" ? devInfo.games : state.total) : (rowInfo ? rowInfo.games : state.total);
+    var narrowed = !!(state.bucket || state.query || state.letter || state.libraryView !== "all");
+    var subGames = state.flag ? state.total : developer ? (devInfo && !state.query && !state.letter && state.libraryView === "all" ? devInfo.games : state.total) : (narrowed ? state.total : (rowInfo ? rowInfo.games : state.total));
     subTitle.appendChild(el("span", { class: "sub-count", text: gamesLabel(subGames) }));
     if (state.flag) subTitle.appendChild(el("span", { class: "sub-flag pill " + state.flag, text: (state.flag === "hack" ? "Hacks" : "Cheats") + (developer ? "" : " · all consoles") }));
     sub.appendChild(subTitle);
+    if (state.bucket) {
+      sub.appendChild(el("button", {
+        type: "button",
+        class: "text-btn see-all bucket-back",
+        "data-nav": "1",
+        "data-bucket-back": "1",
+        text: "All ranges"
+      }));
+    }
     main.appendChild(sub);
     main.appendChild(libraryTools());
     paintLogos(main);
@@ -667,23 +757,28 @@
       main.appendChild(el("div", { class: "empty", text: state.indexing ? "Library is being indexed" : "No platforms yet." }));
       return;
     }
-    if (!state.list.length) {
+    var picker = wantsBucketPicker() && hasBucketCounts(state.bucketCounts);
+    if (picker) {
+      main.appendChild(el("p", { class: "muted bucket-note", text: "Pick a letter range. Each one loads on its own." }));
+      main.appendChild(bucketGrid());
+    } else if (!state.list.length) {
       var scope = developer ? "this developer" : "this console";
       var empty = "No games for " + scope + " yet.";
-      if (state.flag) empty = state.flag === "hack" ? "No hacked ROMs found." : "No cheat ROMs found.";
+      if (state.bucket) empty = "No games in this range.";
+      else if (state.flag) empty = state.flag === "hack" ? "No hacked ROMs found." : "No cheat ROMs found.";
       else if (state.query) empty = "No games match that search.";
       else if (state.libraryView === "favorites") empty = "No favorites for " + scope + " yet.";
       else if (state.libraryView === "recent") empty = "No recently played games for " + scope + " yet.";
       main.appendChild(el("div", { class: "empty", text: empty }));
-      return;
+    } else {
+      var grid = el("div", { class: "grid" });
+      state.list.forEach(function (item) { grid.appendChild(cardEl(item, { library: true })); });
+      main.appendChild(grid);
+      if (state.list.length < state.total) {
+        main.appendChild(el("button", { type: "button", class: "text-btn", "data-nav": "1", "data-more": "1", text: "Load more" }));
+      }
+      watchCovers(main);
     }
-    var grid = el("div", { class: "grid" });
-    state.list.forEach(function (item) { grid.appendChild(cardEl(item, { library: true })); });
-    main.appendChild(grid);
-    if (state.list.length < state.total) {
-      main.appendChild(el("button", { type: "button", class: "text-btn", "data-nav": "1", "data-more": "1", text: "Load more" }));
-    }
-    watchCovers(main);
     main.querySelectorAll(".console[aria-pressed='true']").forEach(function (selected) {
       var scroller = selected.closest(".console-scroll");
       if (scroller) scroller.scrollLeft = Math.max(0, selected.offsetLeft - scroller.offsetLeft - 16);
@@ -725,6 +820,28 @@
     row.appendChild(scroller);
     row.appendChild(el("button", { type: "button", class: "console-arrow", "data-console-nav": "next", "aria-label": "Next consoles", text: "›" }));
     return row;
+  }
+
+  function bucketGrid() {
+    var grid = el("div", { class: "bucket-grid" });
+    RANGE_BUCKETS.forEach(function (pair, index) {
+      var count = bucketGames(pair[0]);
+      var label = bucketLabel(pair[0]);
+      var tile = el("button", {
+        type: "button",
+        class: "range-tile",
+        "data-nav": "1",
+        "data-bucket": pair[0],
+        "aria-label": label + ", " + gamesLabel(count)
+      });
+      var face = el("span", { class: "range-face tone-" + index });
+      face.appendChild(el("span", { class: "range-kicker", text: "Range" }));
+      face.appendChild(el("b", { class: "range-name", text: label }));
+      face.appendChild(el("span", { class: "range-count", text: gamesLabel(count) }));
+      tile.appendChild(face);
+      grid.appendChild(tile);
+    });
+    return grid;
   }
 
   function developerRow(name) {
@@ -1181,7 +1298,7 @@
       return true;
     }
     if (dir === "down") {
-      var card = document.querySelector("#main .grid .card");
+      var card = document.querySelector("#main .bucket-grid [data-bucket]") || document.querySelector("#main .grid .card");
       if (card) {
         card.focus();
         if (card.scrollIntoView) card.scrollIntoView({ block: "nearest", inline: "nearest" });
@@ -2007,6 +2124,7 @@
     function commit(value, flag) {
       state.query = String(value || "").trim();
       state.flag = flag === "hack" || flag === "cheat" ? flag : "";
+      if (state.query || state.flag) clearBucket();
       var searchBox = document.getElementById("search");
       if (searchBox) searchBox.value = state.query;
       close();
@@ -2090,11 +2208,24 @@
     if (event.target.closest("[data-dup]") || event.target.closest("label.check")) return;
     var dev = event.target.closest("[data-developer]");
     if (dev) {
+      clearBucket();
       go({ name: "library", developer: dev.getAttribute("data-developer") || "" });
+      return;
+    }
+    var range = event.target.closest("[data-bucket]");
+    if (range) {
+      state.bucket = range.getAttribute("data-bucket") || "";
+      render();
+      return;
+    }
+    if (event.target.closest("[data-bucket-back]")) {
+      clearBucket();
+      render();
       return;
     }
     var picked = event.target.closest("[data-console]");
     if (picked) {
+      clearBucket();
       go({ name: "library", system: picked.getAttribute("data-console") || "" });
       return;
     }
@@ -2106,6 +2237,7 @@
     var view = event.target.closest("[data-lib-view]");
     if (view) {
       state.libraryView = view.getAttribute("data-lib-view") || "all";
+      if (state.libraryView !== "all") clearBucket();
       render();
       return;
     }
@@ -2115,6 +2247,7 @@
     }
     var system = event.target.closest("[data-system]");
     if (system) {
+      clearBucket();
       go({ name: "library", system: system.getAttribute("data-system") || "" });
       return;
     }
@@ -2166,6 +2299,7 @@
   var searchTimer = 0;
   search.addEventListener("input", function () {
     state.query = search.value.trim();
+    if (state.query) clearBucket();
     clearTimeout(searchTimer);
     searchTimer = setTimeout(function () {
       if (state.route.name !== "library") go({ name: "library", system: state.consoleName || "" });

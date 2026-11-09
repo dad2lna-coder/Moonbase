@@ -842,6 +842,69 @@ html.embedded .top { padding-left: 62px; }
   .grid { grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); gap: 12px; }
 }
 
+.bucket-note { margin: 0 0 12px; }
+.library-sub .bucket-back { margin-left: auto; flex: none; }
+.sub-range { font-size: 18px; font-weight: 700; color: var(--text); }
+.bucket-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin: 0 0 18px;
+}
+.range-tile {
+  display: block;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+}
+.range-tile:focus { outline: none; }
+.range-face {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: flex-end;
+  min-height: 112px;
+  padding: 14px 16px 16px;
+  border-radius: 16px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.28),
+    0 10px 22px rgba(0, 0, 0, 0.45);
+}
+.range-face.tone-0 { background: linear-gradient(160deg, #8a6a2a, #1a1408 72%); }
+.range-face.tone-1 { background: linear-gradient(160deg, #1d4e89, #0c1828 72%); }
+.range-face.tone-2 { background: linear-gradient(160deg, #5b3fb8, #160f32 72%); }
+.range-face.tone-3 { background: linear-gradient(160deg, #1f8f4e, #0b2416 72%); }
+.range-face.tone-4 { background: linear-gradient(160deg, #b4233a, #2a0c12 72%); }
+.range-face.tone-5 { background: linear-gradient(160deg, #0e7c86, #062226 72%); }
+.range-kicker {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.72);
+}
+.range-name {
+  margin-top: 4px;
+  font-size: 28px;
+  line-height: 1;
+  letter-spacing: -0.03em;
+  color: #fff;
+}
+.range-count { margin-top: 8px; font-size: 13px; color: rgba(255, 255, 255, 0.78); }
+.range-tile:hover .range-face,
+.range-tile:focus-visible .range-face {
+  transform: translateY(-2px);
+  box-shadow: 0 0 0 3px #1e6fff, 0 0 22px rgba(30, 111, 255, 0.72);
+}
+
+@media (min-width: 720px) {
+  .bucket-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+
 @media (prefers-reduced-motion: reduce) {
   * { scroll-behavior: auto !important; transition: none !important; }
 }
