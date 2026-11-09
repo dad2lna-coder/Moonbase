@@ -116,6 +116,48 @@ public class RomLibraryTests
         Assert.Equal(1, RomQuery.VersionGroupCount(items, "NES"));
     }
 
+    [Fact]
+    public void LetterRangesAndFolderNames()
+    {
+        Assert.Equal('#', RomQuery.TitleInitial("1942"));
+        Assert.Equal('#', RomQuery.TitleInitial("  *star"));
+        Assert.Equal('E', RomQuery.TitleInitial("Éclair"));
+        Assert.Equal('Q', RomQuery.TitleInitial("Q*bert"));
+
+        var games = RomIndex.Group(RomIndex.Parse(NameIndex, out _));
+        var arcade = RomQuery.Filter(games, null, "Arcade", null, "title");
+        var counts = RomQuery.CountBuckets(arcade);
+        Assert.Equal(new[] { "#-D", "E-H", "I-L", "M-P", "Q-S", "T-Z" }, counts.Select(row => row.Id).ToArray());
+        Assert.Equal(2, counts[0].Games);
+        Assert.Equal(1, counts[1].Games);
+        Assert.Equal(0, counts[2].Games);
+        Assert.Equal(1, counts[4].Games);
+        Assert.Equal("1942", Assert.Single(RomQuery.NarrowLetters(arcade, null, "#")).Title);
+        Assert.Equal("Q*bert", Assert.Single(RomQuery.NarrowLetters(arcade, "q-s", null)).Title);
+        Assert.Empty(RomQuery.NarrowLetters(arcade, "nope", null));
+
+        var names = RomQuery.FolderPlatforms(games, new[] { "mame", "snes" });
+        var mame = Assert.Single(names, row => row.Folder == "mame");
+        Assert.Equal("Arcade", mame.Platform);
+        Assert.False(mame.Match);
+        Assert.Equal("index", mame.Source);
+        Assert.True(Assert.Single(names, row => row.Folder == "NES" && row.Platform == "NES").Match);
+        var diskOnly = Assert.Single(names, row => row.Source == "disk");
+        Assert.Equal("snes", diskOnly.Folder);
+        Assert.False(diskOnly.Match);
+    }
+
+    internal const string NameIndex = """
+    {"items":[
+      {"p":"mame/1942","s":"Arcade","t":"1942","f":"1942.zip","mg":1,"km":1},
+      {"p":"mame/1942a","s":"Arcade","t":"1942","f":"1942a.zip","mg":1,"km":0},
+      {"p":"Arcade/ddragon","s":"Arcade","t":"Double Dragon","f":"ddragon.zip","mg":0},
+      {"p":"Arcade/elev","s":"Arcade","t":"Elevator Action","f":"elev.zip","mg":0},
+      {"p":"Arcade/qbert","s":"Arcade","t":"Q*bert","f":"qbert.zip","mg":0},
+      {"p":"NES/Mario","s":"NES","t":"Super Mario Bros.","f":"mario.nes","mg":0}
+    ]}
+    """;
+
     internal const string SampleIndex = """
     {
       "meta": {"built": true},
@@ -409,6 +451,40 @@ public class RomManagerRouteTests
         var capped = await Json(many.Games(Req("""{"limit":100}""")));
         Assert.Equal(70, capped.GetProperty("total").GetInt32());
         Assert.Equal(60, capped.GetProperty("items").GetArrayLength());
+    }
+
+    [Fact]
+    public async Task BucketPageKeepsTheDefaultShapeAndStillCapsAtSixty()
+    {
+        var module = Module(call => call.Uri.AbsolutePath.EndsWith("/index")
+            ? Text(HttpStatusCode.OK, RomLibraryTests.NameIndex)
+            : Text(HttpStatusCode.OK, "{}"));
+
+        var plain = await Json(module.Games(Req("""{"system":"Arcade"}""")));
+        Assert.False(plain.TryGetProperty("buckets", out _));
+        Assert.Equal(4, plain.GetProperty("total").GetInt32());
+        Assert.Contains(plain.GetProperty("items").EnumerateArray(), item => item.GetProperty("title").GetString() == "1942");
+        Assert.DoesNotContain(plain.GetProperty("items").EnumerateArray(), item => item.GetProperty("title").GetString() == "1942a");
+
+        var page = await Json(module.Games(Req("""{"system":"Arcade","bucket":"Q-S","includeBuckets":1,"limit":100}""")));
+        Assert.Equal(1, page.GetProperty("total").GetInt32());
+        Assert.Equal("Q*bert", Assert.Single(page.GetProperty("items").EnumerateArray()).GetProperty("title").GetString());
+        var buckets = page.GetProperty("buckets").EnumerateArray().ToList();
+        Assert.Equal(6, buckets.Count);
+        Assert.Equal("#-D", buckets[0].GetProperty("id").GetString());
+        Assert.Equal("# – D", buckets[0].GetProperty("label").GetString());
+        Assert.Equal(2, buckets[0].GetProperty("games").GetInt32());
+        Assert.Equal(1, buckets.Single(row => row.GetProperty("id").GetString() == "Q-S").GetProperty("games").GetInt32());
+        Assert.Equal(0, buckets.Single(row => row.GetProperty("id").GetString() == "T-Z").GetProperty("games").GetInt32());
+
+        var letter = await Json(module.Games(Req("""{"system":"Arcade","letter":"E"}""")));
+        Assert.False(letter.TryGetProperty("buckets", out _));
+        Assert.Equal("Elevator Action", Assert.Single(letter.GetProperty("items").EnumerateArray()).GetProperty("title").GetString());
+
+        var systems = await Json(module.Systems(Req("{}")));
+        var names = systems.GetProperty("nameCheck").EnumerateArray().ToList();
+        Assert.Contains(names, row => row.GetProperty("folder").GetString() == "mame" && row.GetProperty("platform").GetString() == "Arcade" && row.GetProperty("match").GetBoolean() == false);
+        Assert.Contains(names, row => row.GetProperty("folder").GetString() == "NES" && row.GetProperty("platform").GetString() == "NES" && row.GetProperty("match").GetBoolean());
     }
 
     [Fact]

@@ -1,3 +1,5 @@
+using System.Globalization;
+using System.Text;
 using System.Text.Json;
 
 namespace Moonfin.Plugins.RomManager;
@@ -185,6 +187,13 @@ public sealed class SystemRollup
 
     public long Bytes { get; set; }
 }
+
+public readonly record struct LetterBucket(string Id, string Label);
+
+public readonly record struct LetterBucketCount(string Id, string Label, int Games);
+
+/// <summary>Moonbase folder name beside the index platform name.</summary>
+public readonly record struct SystemNameCheck(string? Folder, string? Platform, int Games, bool Match, string Source);
 
 public sealed class DuplicateGroup
 {
@@ -803,6 +812,275 @@ public static class RomQuery
         }
 
         return Math.Min(limit, MaxPage);
+    }
+
+    /// <summary>
+    /// Six title ranges. <c>#-D</c> is digits, symbols, and A–D. The id is what
+    /// the client sends back; the label is only for display.
+    /// </summary>
+    public static readonly IReadOnlyList<LetterBucket> LetterBuckets = new LetterBucket[]
+    {
+        new("#-D", "# – D"),
+        new("E-H", "E – H"),
+        new("I-L", "I – L"),
+        new("M-P", "M – P"),
+        new("Q-S", "Q – S"),
+        new("T-Z", "T – Z"),
+    };
+
+    /// <summary>
+    /// Folded A–Z initial, or <c>#</c> when the title does not start with a letter.
+    /// </summary>
+    public static char TitleInitial(string? title)
+    {
+        if (string.IsNullOrWhiteSpace(title))
+        {
+            return '#';
+        }
+
+        var folded = title.TrimStart().Normalize(NormalizationForm.FormD);
+        foreach (var rune in folded.EnumerateRunes())
+        {
+            if (Rune.GetUnicodeCategory(rune) == UnicodeCategory.NonSpacingMark)
+            {
+                continue;
+            }
+
+            var value = rune.Value;
+            if (value is >= 'a' and <= 'z')
+            {
+                return (char)(value - 32);
+            }
+
+            if (value is >= 'A' and <= 'Z')
+            {
+                return (char)value;
+            }
+
+            return '#';
+        }
+
+        return '#';
+    }
+
+    /// <summary>
+    /// Keeps the current order. An unknown bucket or letter matches nothing.
+    /// A letter and a bucket both set must both match.
+    /// </summary>
+    public static List<GameRecord> NarrowLetters(IReadOnlyList<GameRecord> games, string? bucket, string? letter)
+    {
+        if (string.IsNullOrWhiteSpace(bucket) && string.IsNullOrWhiteSpace(letter))
+        {
+            return games as List<GameRecord> ?? games.ToList();
+        }
+
+        var narrowed = new List<GameRecord>();
+        foreach (var game in games)
+        {
+            if (InLetterRange(TitleInitial(game.Title), bucket, letter))
+            {
+                narrowed.Add(game);
+            }
+        }
+
+        return narrowed;
+    }
+
+    public static bool InLetterRange(char initial, string? bucket, string? letter)
+    {
+        if (!string.IsNullOrWhiteSpace(letter))
+        {
+            var want = letter.Trim();
+            var letterOk = false;
+            if (want == "#")
+            {
+                letterOk = initial == '#';
+            }
+            else if (want.Length == 1)
+            {
+                var unit = char.ToUpperInvariant(want[0]);
+                letterOk = unit is >= 'A' and <= 'Z' && initial == unit;
+            }
+
+            if (!letterOk)
+            {
+                return false;
+            }
+        }
+
+        if (string.IsNullOrWhiteSpace(bucket))
+        {
+            return true;
+        }
+
+        var id = bucket.Trim();
+        if (id.Equals("#-D", StringComparison.OrdinalIgnoreCase))
+        {
+            return initial == '#' || initial is >= 'A' and <= 'D';
+        }
+
+        if (id.Equals("E-H", StringComparison.OrdinalIgnoreCase))
+        {
+            return initial is >= 'E' and <= 'H';
+        }
+
+        if (id.Equals("I-L", StringComparison.OrdinalIgnoreCase))
+        {
+            return initial is >= 'I' and <= 'L';
+        }
+
+        if (id.Equals("M-P", StringComparison.OrdinalIgnoreCase))
+        {
+            return initial is >= 'M' and <= 'P';
+        }
+
+        if (id.Equals("Q-S", StringComparison.OrdinalIgnoreCase))
+        {
+            return initial is >= 'Q' and <= 'S';
+        }
+
+        if (id.Equals("T-Z", StringComparison.OrdinalIgnoreCase))
+        {
+            return initial is >= 'T' and <= 'Z';
+        }
+
+        return false;
+    }
+
+    /// <summary>Counts the six buckets over <paramref name="games"/> as they stand. Zeros are kept.</summary>
+    public static List<LetterBucketCount> CountBuckets(IReadOnlyList<GameRecord> games)
+    {
+        var counts = new int[LetterBuckets.Count];
+        foreach (var game in games)
+        {
+            counts[BucketIndex(TitleInitial(game.Title))]++;
+        }
+
+        var rows = new List<LetterBucketCount>(LetterBuckets.Count);
+        for (var i = 0; i < LetterBuckets.Count; i++)
+        {
+            rows.Add(new LetterBucketCount(LetterBuckets[i].Id, LetterBuckets[i].Label, counts[i]));
+        }
+
+        return rows;
+    }
+
+    /// <summary>
+    /// One row per index path-folder and platform pair, then any disk folder the
+    /// index never used as a path prefix. <see cref="SystemNameCheck.Match"/> is
+    /// true only when the folder string and the platform string are the same.
+    /// </summary>
+    public static List<SystemNameCheck> FolderPlatforms(IReadOnlyList<GameRecord> games, IReadOnlyList<string>? diskFolders)
+    {
+        var pairs = new Dictionary<(string Folder, string Platform), (string Folder, string Platform, int Games)>(PairComparer.Instance);
+        foreach (var game in games)
+        {
+            var folder = FirstSegment(game);
+            var platform = game.Platform?.Trim() ?? string.Empty;
+            var key = (folder, platform);
+            if (!pairs.TryGetValue(key, out var row))
+            {
+                pairs[key] = (folder, platform, 1);
+            }
+            else
+            {
+                pairs[key] = (row.Folder, row.Platform, row.Games + 1);
+            }
+        }
+
+        var rows = new List<SystemNameCheck>();
+        var seenFolders = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var row in pairs.Values
+            .OrderBy(row => row.Folder, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(row => row.Platform, StringComparer.OrdinalIgnoreCase))
+        {
+            seenFolders.Add(row.Folder);
+            rows.Add(new SystemNameCheck(
+                row.Folder,
+                string.IsNullOrEmpty(row.Platform) ? null : row.Platform,
+                row.Games,
+                !string.IsNullOrEmpty(row.Folder) && string.Equals(row.Folder, row.Platform, StringComparison.OrdinalIgnoreCase),
+                "index"));
+        }
+
+        if (diskFolders == null)
+        {
+            return rows;
+        }
+
+        foreach (var folder in diskFolders
+            .Where(name => !string.IsNullOrWhiteSpace(name))
+            .Select(name => name.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(name => name, StringComparer.OrdinalIgnoreCase))
+        {
+            if (seenFolders.Contains(folder))
+            {
+                continue;
+            }
+
+            var platform = pairs.Values.FirstOrDefault(row => string.Equals(row.Platform, folder, StringComparison.OrdinalIgnoreCase)).Platform;
+            rows.Add(new SystemNameCheck(
+                folder,
+                string.IsNullOrEmpty(platform) ? null : platform,
+                0,
+                false,
+                "disk"));
+        }
+
+        return rows;
+    }
+
+    private static int BucketIndex(char initial)
+    {
+        if (initial == '#' || initial is >= 'A' and <= 'D')
+        {
+            return 0;
+        }
+
+        if (initial <= 'H')
+        {
+            return 1;
+        }
+
+        if (initial <= 'L')
+        {
+            return 2;
+        }
+
+        if (initial <= 'P')
+        {
+            return 3;
+        }
+
+        if (initial <= 'S')
+        {
+            return 4;
+        }
+
+        return 5;
+    }
+
+    private static string FirstSegment(GameRecord game)
+    {
+        var path = string.IsNullOrWhiteSpace(game.CoverPath) ? game.Members[0].Path : game.CoverPath;
+        var slash = path.IndexOf('/');
+        var folder = slash > 0 ? path[..slash] : path;
+        return folder.Trim();
+    }
+
+    private sealed class PairComparer : IEqualityComparer<(string Folder, string Platform)>
+    {
+        public static readonly PairComparer Instance = new();
+
+        public bool Equals((string Folder, string Platform) x, (string Folder, string Platform) y) =>
+            string.Equals(x.Folder, y.Folder, StringComparison.OrdinalIgnoreCase)
+            && string.Equals(x.Platform, y.Platform, StringComparison.OrdinalIgnoreCase);
+
+        public int GetHashCode((string Folder, string Platform) obj) =>
+            HashCode.Combine(
+                StringComparer.OrdinalIgnoreCase.GetHashCode(obj.Folder ?? string.Empty),
+                StringComparer.OrdinalIgnoreCase.GetHashCode(obj.Platform ?? string.Empty));
     }
 
     public static List<DuplicateGroup> IdenticalCopies(IReadOnlyList<RomEntry> items, string? platform)
