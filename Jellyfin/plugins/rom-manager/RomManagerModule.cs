@@ -98,8 +98,6 @@ public sealed class RomManagerModule : IMoonbaseModule
     {
         var snapshot = await _channel.GetIndexAsync(request.Services, request.CancellationToken).ConfigureAwait(false);
         var rows = RomQuery.Systems(snapshot.Games);
-        var nameCheck = RomQuery.FolderPlatforms(snapshot.Games, DiskFolders(request));
-        PrintNameCheck(request, nameCheck);
         long bytes = 0;
         var games = 0;
         var roms = 0;
@@ -132,80 +130,8 @@ public sealed class RomManagerModule : IMoonbaseModule
                 roms = row.Roms,
                 bytes = row.Bytes,
             }),
-            nameCheck = nameCheck.Select(row => new
-            {
-                folder = row.Folder,
-                platform = row.Platform,
-                games = row.Games,
-                match = row.Match,
-                source = row.Source,
-            }),
             totals = new { games, roms, bytes },
         });
-    }
-
-    /// <summary>
-    /// Top-level library folders, names only. This does not walk ROM files.
-    /// Missing GamesService (unit tests, plugin host without it) yields none.
-    /// </summary>
-    private static IReadOnlyList<string> DiskFolders(PluginRouteRequest request)
-    {
-        var games = request.Services?.GetService(typeof(GamesService)) as GamesService;
-        if (games == null)
-        {
-            return Array.Empty<string>();
-        }
-
-        var names = new List<string>();
-        try
-        {
-            foreach (var library in games.GetGameLibraries())
-            {
-                foreach (var root in library.Locations)
-                {
-                    if (string.IsNullOrWhiteSpace(root) || !Directory.Exists(root))
-                    {
-                        continue;
-                    }
-
-                    foreach (var dir in Directory.EnumerateDirectories(root))
-                    {
-                        var name = Path.GetFileName(dir);
-                        if (string.IsNullOrEmpty(name) || name.StartsWith('.'))
-                        {
-                            continue;
-                        }
-
-                        names.Add(name);
-                    }
-                }
-            }
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"ROM name check: could not list Moonbase folders ({ex.GetType().Name})");
-        }
-
-        return names;
-    }
-
-    private static void PrintNameCheck(PluginRouteRequest request, IReadOnlyList<SystemNameCheck> rows)
-    {
-        var logger = request.Services?.GetService<ILoggerFactory>()?.CreateLogger("Moonfin.RomManager");
-        if (rows.Count == 0)
-        {
-            const string empty = "ROM name check: no systems in the index";
-            logger?.LogInformation("{Message}", empty);
-            Console.WriteLine(empty);
-            return;
-        }
-
-        foreach (var row in rows)
-        {
-            var line = $"ROM name check: moonbaseFolder='{row.Folder ?? "(none)"}' indexPlatform='{row.Platform ?? "(none)"}' games={row.Games} match={row.Match.ToString().ToLowerInvariant()} source={row.Source}";
-            logger?.LogInformation("{Message}", line);
-            Console.WriteLine(line);
-        }
     }
 
     private async Task<PluginRouteResult> GamesCore(PluginRouteRequest request)

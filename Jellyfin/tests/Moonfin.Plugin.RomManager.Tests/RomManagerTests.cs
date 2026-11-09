@@ -482,9 +482,9 @@ public class RomManagerRouteTests
         Assert.Equal("Elevator Action", Assert.Single(letter.GetProperty("items").EnumerateArray()).GetProperty("title").GetString());
 
         var systems = await Json(module.Systems(Req("{}")));
-        var names = systems.GetProperty("nameCheck").EnumerateArray().ToList();
-        Assert.Contains(names, row => row.GetProperty("folder").GetString() == "mame" && row.GetProperty("platform").GetString() == "Arcade" && row.GetProperty("match").GetBoolean() == false);
-        Assert.Contains(names, row => row.GetProperty("folder").GetString() == "NES" && row.GetProperty("platform").GetString() == "NES" && row.GetProperty("match").GetBoolean());
+        Assert.False(systems.TryGetProperty("nameCheck", out _));
+        Assert.True(systems.GetProperty("ok").GetBoolean());
+        Assert.Contains(systems.GetProperty("systems").EnumerateArray(), row => row.GetProperty("system").GetString() == "Arcade");
     }
 
     [Fact]
