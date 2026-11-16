@@ -137,6 +137,11 @@ public class PluginServiceRegistrator : IPluginServiceRegistrator
             new JellyfinRecordingLog(provider.GetRequiredService<ILogger<IncompleteRecordingWatcher>>())));
         serviceCollection.AddHostedService<IncompleteRecordingHostedService>();
 
+        serviceCollection.AddSingleton<IDirectStreamCapture, FfmpegDirectStreamCapture>();
+        serviceCollection.AddSingleton(provider => new DirectIptvRecordingService(
+            Path.Combine(MoonfinPlugin.ResolveDataFolderPath(), "direct-iptv-recordings"),
+            provider.GetRequiredService<IDirectStreamCapture>()));
+
         // Recommendations / Similar Items
         serviceCollection.AddSingleton<MoonfinSimilarItemsService>();
         serviceCollection.AddHostedService<MoonfinSimilarItemsProviderManager>();
