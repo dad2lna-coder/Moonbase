@@ -1,6 +1,12 @@
 using System.Reflection;
+using System.Xml.Serialization;
 using MediaBrowser.Model.Plugins;
 using Moonfin.Server.Models;
+using Newtonsoft.Json;
+using NewtonsoftJsonIgnore = Newtonsoft.Json.JsonIgnoreAttribute;
+using StjIgnore = System.Text.Json.Serialization.JsonIgnoreAttribute;
+using StjPropertyName = System.Text.Json.Serialization.JsonPropertyNameAttribute;
+using StjIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition;
 
 namespace Moonfin.Server;
 
@@ -114,6 +120,103 @@ public class PluginConfiguration : BasePluginConfiguration
     /// When a complete copy of an episode records, delete the copies of it tagged incomplete.
     /// </summary>
     public bool LiveTvDeleteIncompleteCopies { get; set; }
+
+    /// <summary>
+    /// Dispatcharr base URL, for example <c>http://192.168.1.20:9191</c>. Admin plugin
+    /// configuration only. Moonfin API responses never include this value. A feed play URL
+    /// is built from it on the server and is the only place a client sees the host.
+    /// </summary>
+    [StjIgnore]
+    [NewtonsoftJsonIgnore]
+    public string? DispatcharrUrl { get; set; }
+
+    /// <summary>
+    /// Dispatcharr API key. Sent only as <c>Authorization: ApiKey</c> from this server.
+    /// Admin plugin configuration only. It is never logged and never included in any API response.
+    /// </summary>
+    [StjIgnore]
+    [NewtonsoftJsonIgnore]
+    public string? DispatcharrApiKey { get; set; }
+
+    /// <summary>True when a configuration update included <see cref="DispatcharrUrl"/>.</summary>
+    [XmlIgnore]
+    [StjIgnore]
+    [NewtonsoftJsonIgnore]
+    internal bool DispatcharrUrlSpecified { get; private set; }
+
+    /// <summary>True when a configuration update included <see cref="DispatcharrApiKey"/>.</summary>
+    [XmlIgnore]
+    [StjIgnore]
+    [NewtonsoftJsonIgnore]
+    internal bool DispatcharrApiKeySpecified { get; private set; }
+
+    /// <summary>
+    /// Write-only stand-in so the admin page can save the URL. The getter always returns
+    /// null, so a configuration response never contains the stored value.
+    /// </summary>
+    [XmlIgnore]
+    [StjPropertyName("DispatcharrUrl")]
+    [StjIgnore(Condition = StjIgnoreCondition.WhenWritingNull)]
+    [JsonProperty("DispatcharrUrl", NullValueHandling = NullValueHandling.Ignore)]
+    public string? DispatcharrUrlInput
+    {
+        get => null;
+        set => AssignDispatcharrUrl(value);
+    }
+
+    /// <summary>
+    /// Write-only stand-in for <see cref="DispatcharrApiKey"/>. Never serialized.
+    /// </summary>
+    [XmlIgnore]
+    [StjPropertyName("DispatcharrApiKey")]
+    [StjIgnore(Condition = StjIgnoreCondition.WhenWritingNull)]
+    [JsonProperty("DispatcharrApiKey", NullValueHandling = NullValueHandling.Ignore)]
+    public string? DispatcharrApiKeyInput
+    {
+        get => null;
+        set => AssignDispatcharrApiKey(value);
+    }
+
+    /// <summary>
+    /// Keeps a stored Dispatcharr URL or key when this update did not include a new one.
+    /// An explicit empty value clears it. A missing value leaves the previous one in place.
+    /// </summary>
+    internal void RetainDispatcharrSecrets(PluginConfiguration? previous)
+    {
+        if (previous == null)
+        {
+            return;
+        }
+
+        if (!DispatcharrUrlSpecified)
+        {
+            DispatcharrUrl = previous.DispatcharrUrl;
+        }
+
+        if (!DispatcharrApiKeySpecified)
+        {
+            DispatcharrApiKey = previous.DispatcharrApiKey;
+        }
+    }
+
+    private void AssignDispatcharrUrl(string? value)
+    {
+        DispatcharrUrlSpecified = true;
+        DispatcharrUrl = string.IsNullOrWhiteSpace(value) ? null : NormalizeDispatcharrUrl(value);
+    }
+
+    private void AssignDispatcharrApiKey(string? value)
+    {
+        var trimmed = value?.Trim();
+        // A redacted placeholder is not a new key. Leave the stored one alone.
+        if (string.Equals(trimmed, "********", StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        DispatcharrApiKeySpecified = true;
+        DispatcharrApiKey = string.IsNullOrEmpty(trimmed) ? null : trimmed;
+    }
 
     // ---------------------------------------------------------------------
     // Anime filler, canon and recap markers
@@ -491,6 +594,11 @@ public class PluginConfiguration : BasePluginConfiguration
 
         return value;
     }
+
+    /// <summary>
+    /// Normalizes a Dispatcharr base URL the same way as a Seerr URL: http or https, no trailing slash.
+    /// </summary>
+    public static string? NormalizeDispatcharrUrl(string? rawUrl) => NormalizeSeerrUrl(rawUrl);
 
     /// <summary>
     /// Keeps entries that are <c>http</c> or <c>https</c> origins (<c>scheme://host[:port]</c>)

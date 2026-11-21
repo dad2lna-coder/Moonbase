@@ -104,6 +104,13 @@ public class MoonfinPlugin : BasePlugin<PluginConfiguration>, IHasWebPages
         var previousGamesEnabled = Configuration.GamesEnabled;
         var previousGameLibraryIds = Configuration.GameLibraryIds?.ToList() ?? new List<string>();
         var previousRomm = RommSignature(Configuration);
+        if (configuration is PluginConfiguration incoming)
+        {
+            // The admin page does not receive the stored URL or key, so a save that leaves
+            // those inputs blank must not wipe them. An explicit empty value still clears.
+            incoming.RetainDispatcharrSecrets(Configuration);
+        }
+
         base.UpdateConfiguration(configuration);
 
         // MOFIN-PLUGIN-HOOK: host capability flags change with this save, so drop the cached plugin list.

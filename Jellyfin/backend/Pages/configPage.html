@@ -1440,6 +1440,35 @@
                                 Recordings shorter than this share of their scheduled time are incomplete. Default 90.
                             </div>
                         </div>
+                        <h3 class="sectionTitle" style="margin-top: 1.6em;">Dispatcharr</h3>
+                        <div class="fieldDescription" style="margin-bottom: 1em;">
+                            Used by Moonfin to list Direct IPTV feeds and choose which one plays first.
+                            The URL and API key stay on this server. They are not returned to clients or in Moonfin API responses.
+                            Leave a field blank to keep the saved value.
+                        </div>
+                        <div class="inputContainer">
+                            <label class="inputLabel inputLabelUnfocused" for="DispatcharrUrl">Dispatcharr URL</label>
+                            <input type="url" id="DispatcharrUrl" is="emby-input" placeholder="http://192.168.1.20:9191" autocomplete="off" />
+                        </div>
+                        <div class="checkboxContainer">
+                            <label>
+                                <input type="checkbox" id="DispatcharrUrlClear" />
+                                <span>Clear the saved Dispatcharr URL</span>
+                            </label>
+                        </div>
+                        <div class="inputContainer">
+                            <label class="inputLabel inputLabelUnfocused" for="DispatcharrApiKey">Dispatcharr API key</label>
+                            <input type="password" id="DispatcharrApiKey" is="emby-input" autocomplete="off" />
+                            <div class="fieldDescription">
+                                Sent only from this server as Authorization: ApiKey. The saved key is never shown again.
+                            </div>
+                        </div>
+                        <div class="checkboxContainer">
+                            <label>
+                                <input type="checkbox" id="DispatcharrApiKeyClear" />
+                                <span>Clear the saved Dispatcharr API key</span>
+                            </label>
+                        </div>
                     </div>
                     </section>
                     <section class="moonfinTabPanel" data-tab="defaults">
@@ -7179,6 +7208,10 @@
                     document.querySelector('#LiveTvAutoRecordCompleteShowing').checked = config.LiveTvAutoRecordCompleteShowing === true;
                     document.querySelector('#LiveTvIncompleteThresholdPercent').value = config.LiveTvIncompleteThresholdPercent || 90;
                     document.querySelector('#LiveTvDeleteIncompleteCopies').checked = config.LiveTvDeleteIncompleteCopies === true;
+                    document.querySelector('#DispatcharrUrl').value = '';
+                    document.querySelector('#DispatcharrApiKey').value = '';
+                    document.querySelector('#DispatcharrUrlClear').checked = false;
+                    document.querySelector('#DispatcharrApiKeyClear').checked = false;
                     document.querySelector('#AnimeMarkersEnabled').checked = config.AnimeMarkersEnabled === true;
                     document.querySelector('#AnimeMarkerRecapLookup').checked = config.AnimeMarkerRecapLookup !== false;
                     document.querySelector('#AnimeAudioMarkersEnabled').checked = config.AnimeAudioMarkersEnabled === true;
@@ -8064,6 +8097,20 @@
                         config.LiveTvAutoRecordCompleteShowing = document.querySelector('#LiveTvAutoRecordCompleteShowing').checked;
                         config.LiveTvIncompleteThresholdPercent = Math.min(100, Math.max(50, parseInt(document.querySelector('#LiveTvIncompleteThresholdPercent').value, 10) || 90));
                         config.LiveTvDeleteIncompleteCopies = document.querySelector('#LiveTvDeleteIncompleteCopies').checked;
+                        delete config.DispatcharrUrl;
+                        delete config.DispatcharrApiKey;
+                        if (document.querySelector('#DispatcharrUrlClear').checked) {
+                            config.DispatcharrUrl = '';
+                        } else {
+                            var dispatcharrUrl = document.querySelector('#DispatcharrUrl').value.trim();
+                            if (dispatcharrUrl) config.DispatcharrUrl = dispatcharrUrl;
+                        }
+                        if (document.querySelector('#DispatcharrApiKeyClear').checked) {
+                            config.DispatcharrApiKey = '';
+                        } else {
+                            var dispatcharrKey = document.querySelector('#DispatcharrApiKey').value.trim();
+                            if (dispatcharrKey) config.DispatcharrApiKey = dispatcharrKey;
+                        }
                         config.AnimeMarkersEnabled = document.querySelector('#AnimeMarkersEnabled').checked;
                         config.AnimeMarkerRecapLookup = document.querySelector('#AnimeMarkerRecapLookup').checked;
                         config.AnimeAudioMarkersEnabled = document.querySelector('#AnimeAudioMarkersEnabled').checked;

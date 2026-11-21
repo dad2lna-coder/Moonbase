@@ -141,6 +141,7 @@ public class PluginServiceRegistrator : IPluginServiceRegistrator
         serviceCollection.AddSingleton(provider => new DirectIptvRecordingService(
             Path.Combine(MoonfinPlugin.ResolveDataFolderPath(), "direct-iptv-recordings"),
             provider.GetRequiredService<IDirectStreamCapture>()));
+        serviceCollection.AddSingleton<DispatcharrClient>();
 
         // Recommendations / Similar Items
         serviceCollection.AddSingleton<MoonfinSimilarItemsService>();

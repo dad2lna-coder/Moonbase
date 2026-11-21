@@ -9,6 +9,15 @@
     "imageUrl": "https://raw.githubusercontent.com/Moonfin-Client/Plugin/master/Jellyfin/backend/assets/logo.png",
     "versions": [
       {
+        "version": "2.4.3.0",
+        "changelog": "Moonbase 2.4.3 lists Dispatcharr feeds for a Direct IPTV channel and can make one of them primary. Admins set DispatcharrUrl and DispatcharrApiKey on the Live TV tab. Those values stay on the server and are never returned by Moonfin APIs. GET /Moonfin/LiveTv/Direct/Channels/{id}/Feeds returns each stream's id, name, M3U account name, stream hash, and play URL. POST /Moonfin/LiveTv/Direct/Channels/{id}/Feeds/Primary moves a stream to the front of that channel. GET /Moonfin/LiveTv/Direct/Channels/Lookup maps a lineup uuid, number, or tvg id to the Dispatcharr channel id. Live TV management is the permission. This package is the server plugin only and does not replace the bundled Moonfin web app.",
+        "targetAbi": "10.10.0.0",
+        "sourceUrl": "https://github.com/dad2lna-coder/Moonbase/releases/download/2.4.3/Moonfin.Server-2.4.3.0.zip",
+        "checksum": "970C822E686413D037F9B21762C7DAE5",
+        "timestamp": "2026-11-21T19:57:42",
+        "dependencies": []
+      },
+      {
         "version": "2.4.2.0",
         "changelog": "Moonbase 2.4.2 records Direct IPTV through the signed-in Jellyfin session. MoFin lists, schedules, and cancels M3U recordings at /Moonfin/LiveTv/Direct/Recordings. Live TV management is the permission, and no API key is stored. This package is the server plugin only and does not replace the bundled Moonfin web app.",
         "targetAbi": "10.10.0.0",
@@ -118,7 +127,7 @@
       },
       {
         "version": "1.8.2.0",
-        "changelog": "## Features\n\n- Added Media Bar Enhanced support in desktop media bar settings. (#98)\n- Clicking a row item now navigates to the correct library, and playback from the Continue Watching row works properly again. (#60)\n\n## Bug Fixes\n\n- Details page buttons were too large on some screens — they've been resized to something more reasonable. (#100)\n- Clicking items from third-party home screen section plugins no longer incorrectly triggers Moonfin's custom detail page. (#96)\n- Admin default settings now correctly propagate to existing users when changed. (#101)\n- The Jellyseerr discover page was crashing to an error screen because the proxy was wrapping responses in an unexpected JSON envelope. That's fixed now. (#108)\n- The global profile now saves reliably, the media bar state persists correctly across Moonfin and Paradox themes, and users no longer see genres or library sections they don't have access to. (#87)",
+        "changelog": "## Features\n\n- Added Media Bar Enhanced support in desktop media bar settings. (#98)\n- Clicking a row item now navigates to the correct library, and playback from the Continue Watching row works properly again. (#60)\n\n## Bug Fixes\n\n- Details page buttons were too large on some screens \u2014 they've been resized to something more reasonable. (#100)\n- Clicking items from third-party home screen section plugins no longer incorrectly triggers Moonfin's custom detail page. (#96)\n- Admin default settings now correctly propagate to existing users when changed. (#101)\n- The Jellyseerr discover page was crashing to an error screen because the proxy was wrapping responses in an unexpected JSON envelope. That's fixed now. (#108)\n- The global profile now saves reliably, the media bar state persists correctly across Moonfin and Paradox themes, and users no longer see genres or library sections they don't have access to. (#87)",
         "targetAbi": "10.10.0.0",
         "sourceUrl": "https://github.com/Moonfin-Client/Plugin/releases/download/1.8.2/Moonfin.Server-1.8.2.0.zip",
         "checksum": "C559FB46DFE70DD27F151FB928D2F604",
