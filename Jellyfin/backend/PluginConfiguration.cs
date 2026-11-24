@@ -138,6 +138,26 @@ public class PluginConfiguration : BasePluginConfiguration
     [NewtonsoftJsonIgnore]
     public string? DispatcharrApiKey { get; set; }
 
+    /// <summary>LAN origin of the Free TV server. Moonbase calls this. Clients do not.</summary>
+    public const string DefaultFreeTvUrl = "http://192.168.1.119:3004";
+
+    /// <summary>
+    /// Public origin used in feed play URLs (/mofin/free/s/member-id.m3u8).
+    /// </summary>
+    public const string DefaultFreeTvPublicUrl = "https://dad2lna.duckdns.org:8443";
+
+    /// <summary>
+    /// Free TV base URL Moonbase uses to read stacks and save the primary member.
+    /// Default <see cref="DefaultFreeTvUrl"/>. An empty or invalid value falls back to that default.
+    /// </summary>
+    public string FreeTvUrl { get; set; } = DefaultFreeTvUrl;
+
+    /// <summary>
+    /// Public base prepended to a stack member's play URL. Default <see cref="DefaultFreeTvPublicUrl"/>.
+    /// A <c>publicBase</c> on the Free TV state response wins over this when it is present.
+    /// </summary>
+    public string FreeTvPublicUrl { get; set; } = DefaultFreeTvPublicUrl;
+
     /// <summary>True when a configuration update included <see cref="DispatcharrUrl"/>.</summary>
     [XmlIgnore]
     [StjIgnore]

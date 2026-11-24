@@ -10,9 +10,10 @@ using Moonfin.Server.Services;
 namespace Moonfin.Server.Api;
 
 /// <summary>
-/// Dispatcharr channel feeds for Direct IPTV. Authentication is the signed-in
-/// Jellyfin session. Live TV management is the permission. The Dispatcharr API
-/// key stays on the server and is never returned.
+/// Deprecated. MoFin does not call these. Direct IPTV stacks are served by
+/// <see cref="DirectIptvStacksController"/> from Free TV. The routes stay so an
+/// older client still gets an answer, and they still require Live TV management.
+/// Dispatcharr's API key stays on the server and is never returned.
 /// </summary>
 [ApiController]
 [Route("Moonfin/LiveTv/Direct")]
@@ -27,6 +28,7 @@ public class DirectIptvChannelsController : ControllerBase
         _dispatcharr = dispatcharr;
     }
 
+    /// <summary>Deprecated. Dispatcharr stream list. Prefer Free TV stacks.</summary>
     [HttpGet("Channels/{dispatcharrChannelId}/Feeds")]
     [ProducesResponseType(StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
@@ -41,6 +43,7 @@ public class DirectIptvChannelsController : ControllerBase
         return FromCall(result);
     }
 
+    /// <summary>Deprecated. Moves a Dispatcharr stream to the front of the channel.</summary>
     [HttpPost("Channels/{id}/Feeds/Primary")]
     [ProducesResponseType(StatusCodes.Status204NoContent)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
@@ -66,7 +69,7 @@ public class DirectIptvChannelsController : ControllerBase
         return FromCall(result);
     }
 
-    /// <summary>Maps a lineup row to the Dispatcharr channel id.</summary>
+    /// <summary>Deprecated. Maps a lineup row to the Dispatcharr channel id.</summary>
     [HttpGet("Channels/Lookup")]
     [ProducesResponseType(StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]

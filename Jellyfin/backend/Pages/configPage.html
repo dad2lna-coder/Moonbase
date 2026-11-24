@@ -1440,9 +1440,29 @@
                                 Recordings shorter than this share of their scheduled time are incomplete. Default 90.
                             </div>
                         </div>
+                        <h3 class="sectionTitle" style="margin-top: 1.6em;">Free TV</h3>
+                        <div class="fieldDescription" style="margin-bottom: 1em;">
+                            MoFin stack channels ask Moonbase, and Moonbase asks this server.
+                            The LAN URL is for Moonbase only. Play links use the public URL.
+                            Leave a field blank to keep the default.
+                        </div>
+                        <div class="inputContainer">
+                            <label class="inputLabel inputLabelUnfocused" for="FreeTvUrl">Free TV URL</label>
+                            <input type="url" id="FreeTvUrl" is="emby-input" placeholder="http://192.168.1.119:3004" autocomplete="off" />
+                            <div class="fieldDescription">
+                                Where Moonbase reads <code>/mofin/free/pick/api/state</code>. Default http://192.168.1.119:3004.
+                            </div>
+                        </div>
+                        <div class="inputContainer">
+                            <label class="inputLabel inputLabelUnfocused" for="FreeTvPublicUrl">Free TV public URL</label>
+                            <input type="url" id="FreeTvPublicUrl" is="emby-input" placeholder="https://dad2lna.duckdns.org:8443" autocomplete="off" />
+                            <div class="fieldDescription">
+                                Prepended to <code>/mofin/free/s/<member>.m3u8</code>. Default https://dad2lna.duckdns.org:8443.
+                            </div>
+                        </div>
                         <h3 class="sectionTitle" style="margin-top: 1.6em;">Dispatcharr</h3>
                         <div class="fieldDescription" style="margin-bottom: 1em;">
-                            Used by Moonfin to list Direct IPTV feeds and choose which one plays first.
+                            Unused by current MoFin. The old Dispatcharr feed routes are still on the server.
                             The URL and API key stay on this server. They are not returned to clients or in Moonfin API responses.
                             Leave a field blank to keep the saved value.
                         </div>
@@ -7208,6 +7228,8 @@
                     document.querySelector('#LiveTvAutoRecordCompleteShowing').checked = config.LiveTvAutoRecordCompleteShowing === true;
                     document.querySelector('#LiveTvIncompleteThresholdPercent').value = config.LiveTvIncompleteThresholdPercent || 90;
                     document.querySelector('#LiveTvDeleteIncompleteCopies').checked = config.LiveTvDeleteIncompleteCopies === true;
+                    document.querySelector('#FreeTvUrl').value = config.FreeTvUrl || 'http://192.168.1.119:3004';
+                    document.querySelector('#FreeTvPublicUrl').value = config.FreeTvPublicUrl || 'https://dad2lna.duckdns.org:8443';
                     document.querySelector('#DispatcharrUrl').value = '';
                     document.querySelector('#DispatcharrApiKey').value = '';
                     document.querySelector('#DispatcharrUrlClear').checked = false;
@@ -8097,6 +8119,8 @@
                         config.LiveTvAutoRecordCompleteShowing = document.querySelector('#LiveTvAutoRecordCompleteShowing').checked;
                         config.LiveTvIncompleteThresholdPercent = Math.min(100, Math.max(50, parseInt(document.querySelector('#LiveTvIncompleteThresholdPercent').value, 10) || 90));
                         config.LiveTvDeleteIncompleteCopies = document.querySelector('#LiveTvDeleteIncompleteCopies').checked;
+                        config.FreeTvUrl = document.querySelector('#FreeTvUrl').value.trim() || 'http://192.168.1.119:3004';
+                        config.FreeTvPublicUrl = document.querySelector('#FreeTvPublicUrl').value.trim() || 'https://dad2lna.duckdns.org:8443';
                         delete config.DispatcharrUrl;
                         delete config.DispatcharrApiKey;
                         if (document.querySelector('#DispatcharrUrlClear').checked) {

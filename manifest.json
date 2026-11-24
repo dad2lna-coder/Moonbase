@@ -9,6 +9,15 @@
     "imageUrl": "https://raw.githubusercontent.com/Moonfin-Client/Plugin/master/Jellyfin/backend/assets/logo.png",
     "versions": [
       {
+        "version": "2.4.4.0",
+        "changelog": "Moonbase 2.4.4 switches Direct IPTV feed choice over to the Free TV stack server. Any signed-in user can list a stack's members and choose which one plays first. GET /Moonfin/LiveTv/Direct/Stacks/{slug}/Feeds returns each member's id, provider, name, public play URL, and whether it is primary. PUT /Moonfin/LiveTv/Direct/Stacks/{slug}/Primary with {memberId} saves that member as primary and moves it to the front, the same way the Free TV picker does. Admins set FreeTvUrl (default http://192.168.1.119:3004) and FreeTvPublicUrl (default https://dad2lna.duckdns.org:8443) on the Live TV tab. The older Dispatcharr feed routes are still present and unused. This package is the server plugin only and does not replace the bundled Moonfin web app.",
+        "targetAbi": "10.10.0.0",
+        "sourceUrl": "https://github.com/dad2lna-coder/Moonbase/releases/download/2.4.4/Moonfin.Server-2.4.4.0.zip",
+        "checksum": "E241E1D369283EACA84157A46C1C4D4E",
+        "timestamp": "2026-11-24T23:23:38",
+        "dependencies": []
+      },
+      {
         "version": "2.4.3.0",
         "changelog": "Moonbase 2.4.3 lists Dispatcharr feeds for a Direct IPTV channel and can make one of them primary. Admins set DispatcharrUrl and DispatcharrApiKey on the Live TV tab. Those values stay on the server and are never returned by Moonfin APIs. GET /Moonfin/LiveTv/Direct/Channels/{id}/Feeds returns each stream's id, name, M3U account name, stream hash, and play URL. POST /Moonfin/LiveTv/Direct/Channels/{id}/Feeds/Primary moves a stream to the front of that channel. GET /Moonfin/LiveTv/Direct/Channels/Lookup maps a lineup uuid, number, or tvg id to the Dispatcharr channel id. Live TV management is the permission. This package is the server plugin only and does not replace the bundled Moonfin web app.",
         "targetAbi": "10.10.0.0",
