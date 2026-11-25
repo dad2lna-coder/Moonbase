@@ -9,6 +9,15 @@
     "imageUrl": "https://raw.githubusercontent.com/Moonfin-Client/Plugin/master/Jellyfin/backend/assets/logo.png",
     "versions": [
       {
+        "version": "2.4.5.0",
+        "changelog": "Moonbase 2.4.5 fixes saving which Free TV member plays first. POST /mofin/free/pick/api/save now sends X-Mofin-Pick: 1 and the document the picker posts: channels from the state selection, every stack, and settings. The chosen member is marked primary and moved to the front of that stack. Other stacks and the fields name, record, on, group, chno, and lang are left untouched. The existing selection is passed through unchanged, so the save does not post an empty channels object and wipe the lineup. Unknown stacks and members are still not posted. This package is the server plugin only and does not replace the bundled Moonfin web app.",
+        "targetAbi": "10.10.0.0",
+        "sourceUrl": "https://github.com/dad2lna-coder/Moonbase/releases/download/2.4.5/Moonfin.Server-2.4.5.0.zip",
+        "checksum": "A94BEB22DC196A18211F13E57E4B5C0B",
+        "timestamp": "2026-11-25T00:34:37",
+        "dependencies": []
+      },
+      {
         "version": "2.4.4.0",
         "changelog": "Moonbase 2.4.4 switches Direct IPTV feed choice over to the Free TV stack server. Any signed-in user can list a stack's members and choose which one plays first. GET /Moonfin/LiveTv/Direct/Stacks/{slug}/Feeds returns each member's id, provider, name, public play URL, and whether it is primary. PUT /Moonfin/LiveTv/Direct/Stacks/{slug}/Primary with {memberId} saves that member as primary and moves it to the front, the same way the Free TV picker does. Admins set FreeTvUrl (default http://192.168.1.119:3004) and FreeTvPublicUrl (default https://dad2lna.duckdns.org:8443) on the Live TV tab. The older Dispatcharr feed routes are still present and unused. This package is the server plugin only and does not replace the bundled Moonfin web app.",
         "targetAbi": "10.10.0.0",
@@ -136,7 +145,7 @@
       },
       {
         "version": "1.8.2.0",
-        "changelog": "## Features\n\n- Added Media Bar Enhanced support in desktop media bar settings. (#98)\n- Clicking a row item now navigates to the correct library, and playback from the Continue Watching row works properly again. (#60)\n\n## Bug Fixes\n\n- Details page buttons were too large on some screens \u2014 they've been resized to something more reasonable. (#100)\n- Clicking items from third-party home screen section plugins no longer incorrectly triggers Moonfin's custom detail page. (#96)\n- Admin default settings now correctly propagate to existing users when changed. (#101)\n- The Jellyseerr discover page was crashing to an error screen because the proxy was wrapping responses in an unexpected JSON envelope. That's fixed now. (#108)\n- The global profile now saves reliably, the media bar state persists correctly across Moonfin and Paradox themes, and users no longer see genres or library sections they don't have access to. (#87)",
+        "changelog": "## Features\n\n- Added Media Bar Enhanced support in desktop media bar settings. (#98)\n- Clicking a row item now navigates to the correct library, and playback from the Continue Watching row works properly again. (#60)\n\n## Bug Fixes\n\n- Details page buttons were too large on some screens — they've been resized to something more reasonable. (#100)\n- Clicking items from third-party home screen section plugins no longer incorrectly triggers Moonfin's custom detail page. (#96)\n- Admin default settings now correctly propagate to existing users when changed. (#101)\n- The Jellyseerr discover page was crashing to an error screen because the proxy was wrapping responses in an unexpected JSON envelope. That's fixed now. (#108)\n- The global profile now saves reliably, the media bar state persists correctly across Moonfin and Paradox themes, and users no longer see genres or library sections they don't have access to. (#87)",
         "targetAbi": "10.10.0.0",
         "sourceUrl": "https://github.com/Moonfin-Client/Plugin/releases/download/1.8.2/Moonfin.Server-1.8.2.0.zip",
         "checksum": "C559FB46DFE70DD27F151FB928D2F604",

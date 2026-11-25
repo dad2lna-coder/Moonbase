@@ -20,6 +20,17 @@ public class FreeTvClientTests
     private const string State = """
         {
           "publicBase": "https://tv.example:8443",
+          "channels": [
+            {"id": "catalog-news", "name": "Catalog only"}
+          ],
+          "selection": {
+            "stack-news": "stvp-2",
+            "weather": {"id": "plex-9", "keep": true}
+          },
+          "settings": {
+            "theme": "night",
+            "guideDays": 7
+          },
           "stacks": [
             {
               "id": "stack-news",
@@ -29,7 +40,8 @@ public class FreeTvClientTests
               "record": "https://rec.example/news.ts",
               "on": true,
               "group": "News",
-              "chno": "5"
+              "chno": "5",
+              "lang": "en"
             },
             {
               "id": "weather",
@@ -42,7 +54,8 @@ public class FreeTvClientTests
               "record": "",
               "on": false,
               "group": "Weather",
-              "chno": 12
+              "chno": 12,
+              "lang": "es"
             }
           ]
         }
@@ -111,7 +124,7 @@ public class FreeTvClientTests
     }
 
     [Fact]
-    public async Task SetPrimary_PostsTheStackWithThatMemberFirstAndClearsTheCache()
+    public async Task SetPrimary_PostsThePickerDocumentAndClearsTheCache()
     {
         var handler = new StubHandler();
         handler.When("/mofin/free/pick/api/state", State);
@@ -123,16 +136,54 @@ public class FreeTvClientTests
         Assert.Equal(FreeTvCallStatus.Ok, saved.Status);
         var post = handler.Calls.Single(call => call.Method == "POST");
         Assert.Equal("/mofin/free/pick/api/save", post.Path);
+        Assert.Equal("1", post.Pick);
+        Assert.Equal("application/json", post.ContentType);
         using var document = JsonDocument.Parse(post.Body!);
-        Assert.Equal("plu-1", document.RootElement.GetProperty("primary").GetString());
-        Assert.Equal("plu-1", document.RootElement.GetProperty("members")[0].GetString());
-        Assert.Equal("stvp-2", document.RootElement.GetProperty("members")[1].GetString());
-        Assert.Equal("rok-3", document.RootElement.GetProperty("members")[2].GetString());
-        Assert.Equal("https://rec.example/news.ts", document.RootElement.GetProperty("record").GetString());
-        Assert.True(document.RootElement.GetProperty("on").GetBoolean());
-        Assert.Equal("News", document.RootElement.GetProperty("group").GetString());
-        Assert.Equal("5", document.RootElement.GetProperty("chno").GetString());
-        Assert.Equal("stack-news", document.RootElement.GetProperty("id").GetString());
+        var root = document.RootElement;
+        Assert.Equal(3, root.EnumerateObject().Count());
+        Assert.False(root.TryGetProperty("id", out _));
+        Assert.False(root.TryGetProperty("members", out _));
+        Assert.False(root.TryGetProperty("selection", out _));
+        Assert.False(root.TryGetProperty("publicBase", out _));
+
+        var channels = root.GetProperty("channels");
+        Assert.Equal(JsonValueKind.Object, channels.ValueKind);
+        Assert.Equal("stvp-2", channels.GetProperty("stack-news").GetString());
+        Assert.Equal("plex-9", channels.GetProperty("weather").GetProperty("id").GetString());
+        Assert.True(channels.GetProperty("weather").GetProperty("keep").GetBoolean());
+        Assert.False(channels.TryGetProperty("0", out _));
+        Assert.NotEqual("catalog-news", channels.TryGetProperty("id", out var catalogId) ? catalogId.GetString() : null);
+
+        var settings = root.GetProperty("settings");
+        Assert.Equal("night", settings.GetProperty("theme").GetString());
+        Assert.Equal(7, settings.GetProperty("guideDays").GetInt32());
+
+        var stacks = root.GetProperty("stacks");
+        Assert.Equal(2, stacks.GetArrayLength());
+        var news = stacks[0];
+        Assert.Equal("plu-1", news.GetProperty("primary").GetString());
+        Assert.Equal("plu-1", news.GetProperty("members")[0].GetString());
+        Assert.Equal("stvp-2", news.GetProperty("members")[1].GetString());
+        Assert.Equal("rok-3", news.GetProperty("members")[2].GetString());
+        Assert.Equal("https://rec.example/news.ts", news.GetProperty("record").GetString());
+        Assert.True(news.GetProperty("on").GetBoolean());
+        Assert.Equal("News", news.GetProperty("group").GetString());
+        Assert.Equal("News", news.GetProperty("name").GetString());
+        Assert.Equal("5", news.GetProperty("chno").GetString());
+        Assert.Equal("en", news.GetProperty("lang").GetString());
+        Assert.Equal("stack-news", news.GetProperty("id").GetString());
+
+        var weather = stacks[1];
+        Assert.Equal("weather", weather.GetProperty("id").GetString());
+        Assert.Equal("plex-9", weather.GetProperty("primary").GetString());
+        Assert.Equal("plex-9", weather.GetProperty("members")[0].GetProperty("id").GetString());
+        Assert.Equal("plu-8", weather.GetProperty("members")[1].GetProperty("memberId").GetString());
+        Assert.Equal("Weather", weather.GetProperty("name").GetString());
+        Assert.Equal("", weather.GetProperty("record").GetString());
+        Assert.False(weather.GetProperty("on").GetBoolean());
+        Assert.Equal("Weather", weather.GetProperty("group").GetString());
+        Assert.Equal(12, weather.GetProperty("chno").GetInt32());
+        Assert.Equal("es", weather.GetProperty("lang").GetString());
 
         await client.GetFeedsAsync("news", CancellationToken.None);
         Assert.Equal(3, handler.Calls.Count(call => call.Method == "GET"));
@@ -148,13 +199,28 @@ public class FreeTvClientTests
         var saved = await client.SetPrimaryAsync("weather", "plu-8", CancellationToken.None);
 
         Assert.Equal(FreeTvCallStatus.Ok, saved.Status);
-        using var document = JsonDocument.Parse(handler.Calls.Single(call => call.Method == "POST").Body!);
-        var members = document.RootElement.GetProperty("members");
+        var post = handler.Calls.Single(call => call.Method == "POST");
+        Assert.Equal("1", post.Pick);
+        Assert.Equal("application/json", post.ContentType);
+        using var document = JsonDocument.Parse(post.Body!);
+        var root = document.RootElement;
+        Assert.Equal("stvp-2", root.GetProperty("channels").GetProperty("stack-news").GetString());
+        Assert.Equal("night", root.GetProperty("settings").GetProperty("theme").GetString());
+        var stacks = root.GetProperty("stacks");
+        Assert.Equal("stack-news", stacks[0].GetProperty("id").GetString());
+        Assert.Equal("stvp-2", stacks[0].GetProperty("primary").GetString());
+        var members = stacks[1].GetProperty("members");
         Assert.Equal("plu-8", members[0].GetProperty("memberId").GetString());
         Assert.Equal("Weather Pluto", members[0].GetProperty("name").GetString());
         Assert.Equal("plex-9", members[1].GetProperty("id").GetString());
-        Assert.False(document.RootElement.GetProperty("on").GetBoolean());
-        Assert.Equal(12, document.RootElement.GetProperty("chno").GetInt32());
+        Assert.Equal("Weather Plex", members[1].GetProperty("name").GetString());
+        Assert.Equal("plu-8", stacks[1].GetProperty("primary").GetString());
+        Assert.Equal("Weather", stacks[1].GetProperty("name").GetString());
+        Assert.Equal("", stacks[1].GetProperty("record").GetString());
+        Assert.False(stacks[1].GetProperty("on").GetBoolean());
+        Assert.Equal("Weather", stacks[1].GetProperty("group").GetString());
+        Assert.Equal(12, stacks[1].GetProperty("chno").GetInt32());
+        Assert.Equal("es", stacks[1].GetProperty("lang").GetString());
     }
 
     [Fact]
@@ -171,6 +237,21 @@ public class FreeTvClientTests
         Assert.Equal(FreeTvCallStatus.NotFound, missingStack.Status);
         Assert.Equal(FreeTvCallStatus.NotFound, missingMember.Status);
         Assert.Equal(FreeTvCallStatus.BadRequest, blank.Status);
+        Assert.DoesNotContain(handler.Calls, call => call.Method == "POST");
+    }
+
+    [Fact]
+    public async Task SetPrimary_WithoutASelectionObject_DoesNotPost()
+    {
+        var handler = new StubHandler();
+        handler.When("/mofin/free/pick/api/state", """
+            {"stacks":[{"id":"news","members":["plu-1"],"primary":"plu-1","name":"News"}],"channels":[{"id":"catalog"}]}
+            """);
+        var client = Client(handler);
+
+        var saved = await client.SetPrimaryAsync("news", "plu-1", CancellationToken.None);
+
+        Assert.Equal(FreeTvCallStatus.Upstream, saved.Status);
         Assert.DoesNotContain(handler.Calls, call => call.Method == "POST");
     }
 
@@ -194,6 +275,10 @@ public class FreeTvClientTests
         var downResult = await Client(down).GetFeedsAsync("news", CancellationToken.None);
         Assert.Equal(FreeTvCallStatus.Upstream, downResult.Status);
 
+        var gateway = new StubHandler { Status = HttpStatusCode.BadGateway };
+        var gatewayResult = await Client(gateway).SetPrimaryAsync("news", "plu-1", CancellationToken.None);
+        Assert.Equal(FreeTvCallStatus.Upstream, gatewayResult.Status);
+
         var broken = new StubHandler { Throw = new HttpRequestException("refused") };
         var brokenResult = await Client(broken).SetPrimaryAsync("news", "plu-1", CancellationToken.None);
         Assert.Equal(FreeTvCallStatus.Upstream, brokenResult.Status);
@@ -203,6 +288,36 @@ public class FreeTvClientTests
         var timed = await slow.GetFeedsAsync("news", CancellationToken.None);
         Assert.Equal(FreeTvCallStatus.Upstream, timed.Status);
         Assert.Contains("respond", timed.Error, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task SetPrimary_WhenSaveFails_DoesNotThrowAndKeepsTheCache()
+    {
+        var handler = new StubHandler { PostStatus = HttpStatusCode.BadGateway };
+        handler.When("/mofin/free/pick/api/state", State);
+        var now = DateTimeOffset.Parse("2026-11-24T12:00:00Z");
+        var client = Client(handler, () => now);
+
+        await client.GetFeedsAsync("news", CancellationToken.None);
+        var saved = await client.SetPrimaryAsync("news", "plu-1", CancellationToken.None);
+
+        Assert.Equal(FreeTvCallStatus.Upstream, saved.Status);
+        Assert.Contains(handler.Calls, call => call.Method == "POST" && call.Pick == "1");
+        Assert.Equal(2, handler.Calls.Count(call => call.Method == "GET"));
+
+        await client.GetFeedsAsync("news", CancellationToken.None);
+        Assert.Equal(2, handler.Calls.Count(call => call.Method == "GET"));
+
+        var hanging = new StubHandler { HangPost = true };
+        hanging.When("/mofin/free/pick/api/state", State);
+        var slow = Client(hanging, () => now, TimeSpan.FromMilliseconds(200));
+        await slow.GetFeedsAsync("news", CancellationToken.None);
+        var timed = await slow.SetPrimaryAsync("news", "plu-1", CancellationToken.None);
+        Assert.Equal(FreeTvCallStatus.Upstream, timed.Status);
+        Assert.Contains("respond", timed.Error, StringComparison.OrdinalIgnoreCase);
+        var gets = hanging.Calls.Count(call => call.Method == "GET");
+        await slow.GetFeedsAsync("news", CancellationToken.None);
+        Assert.Equal(gets, hanging.Calls.Count(call => call.Method == "GET"));
     }
 
     [Fact]
@@ -315,15 +430,19 @@ public class FreeTvClientTests
 
         public HttpStatusCode Status { get; set; } = HttpStatusCode.OK;
 
+        public HttpStatusCode PostStatus { get; set; } = HttpStatusCode.OK;
+
         public Exception? Throw { get; set; }
 
         public bool Hang { get; set; }
+
+        public bool HangPost { get; set; }
 
         public void When(string path, string body) => _bodies[path] = body;
 
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
-            if (Hang)
+            if (Hang || (HangPost && request.Method == HttpMethod.Post))
             {
                 await Task.Delay(Timeout.Infinite, cancellationToken).ConfigureAwait(false);
             }
@@ -337,14 +456,18 @@ public class FreeTvClientTests
                 ? null
                 : await request.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
             var path = request.RequestUri!.PathAndQuery;
-            Calls.Add(new Call(request.Method.Method, path, body));
+            var pick = request.Headers.TryGetValues("X-Mofin-Pick", out var values)
+                ? string.Join(",", values)
+                : null;
+            Calls.Add(new Call(request.Method.Method, path, body, pick, request.Content?.Headers.ContentType?.MediaType));
             var payload = _bodies.TryGetValue(path, out var found) ? found : "{}";
-            return new HttpResponseMessage(Status)
+            var status = request.Method == HttpMethod.Post ? PostStatus : Status;
+            return new HttpResponseMessage(status)
             {
                 Content = new StringContent(payload, Encoding.UTF8, "application/json"),
             };
         }
     }
 
-    private readonly record struct Call(string Method, string Path, string? Body);
+    private readonly record struct Call(string Method, string Path, string? Body, string? Pick, string? ContentType);
 }

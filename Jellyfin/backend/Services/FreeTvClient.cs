@@ -188,12 +188,17 @@ public sealed class FreeTvClient
     }
 
     /// <summary>
-    /// The picker sets primary and moves that member to the front, then posts the stack.
-    /// Every other field on the stack is left as Free TV sent it.
+    /// The picker sets primary and moves that member to the front, then posts
+    /// the whole document: channels (the state's selection, not the catalog),
+    /// every stack, and settings. A missing selection is not replaced with {}
+    /// — that would wipe the lineup. Every other stack and every other field
+    /// is left as Free TV sent it.
     /// </summary>
     internal static StackEdit EditStack(string stateJson, string slug, string memberId)
     {
-        var stack = FindStack(stateJson, slug);
+        var root = JsonNode.Parse(stateJson) as JsonObject
+            ?? throw new JsonException("Free TV state was not an object.");
+        var stack = FindStack(root, slug);
         if (stack == null)
         {
             return new StackEdit(null, false, false);
@@ -231,7 +236,18 @@ public sealed class FreeTvClient
         }
 
         stack["primary"] = exact;
-        return new StackEdit(stack.ToJsonString(new JsonSerializerOptions { WriteIndented = false }), true, true);
+        if (root["selection"] is not JsonObject selection)
+        {
+            throw new JsonException("Free TV state has no selection object to send as channels.");
+        }
+
+        var document = new JsonObject
+        {
+            ["channels"] = selection.DeepClone(),
+            ["stacks"] = root["stacks"]!.DeepClone(),
+            ["settings"] = CloneOrEmpty(root["settings"]),
+        };
+        return new StackEdit(document.ToJsonString(new JsonSerializerOptions { WriteIndented = false }), true, true);
     }
 
     internal static string ProviderFor(string memberId)
@@ -351,7 +367,10 @@ public sealed class FreeTvClient
             request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
             if (json != null)
             {
-                request.Content = new StringContent(json, Encoding.UTF8, "application/json");
+                request.Headers.TryAddWithoutValidation("X-Mofin-Pick", "1");
+                var content = new StringContent(json, Encoding.UTF8, "application/json");
+                content.Headers.ContentType = new MediaTypeHeaderValue("application/json");
+                request.Content = content;
             }
 
             using var response = await client.SendAsync(request, cancellationToken).ConfigureAwait(false);
@@ -407,6 +426,11 @@ public sealed class FreeTvClient
     private static JsonObject? FindStack(string stateJson, string slug)
     {
         var root = JsonNode.Parse(stateJson) as JsonObject;
+        return FindStack(root, slug);
+    }
+
+    private static JsonObject? FindStack(JsonObject? root, string slug)
+    {
         if (root?["stacks"] is not JsonArray stacks)
         {
             return null;
@@ -421,6 +445,12 @@ public sealed class FreeTvClient
         }
 
         return null;
+    }
+
+    private static JsonNode CloneOrEmpty(JsonNode? node)
+    {
+        var cloned = node?.DeepClone();
+        return cloned ?? new JsonObject();
     }
 
     private static bool StackMatches(JsonObject stack, string slug)
