@@ -1,7 +1,10 @@
 using Jellyfin.Data.Events.Users;
 using MediaBrowser.Controller;
 using MediaBrowser.Controller.Events;
+using MediaBrowser.Controller.Library;
+using MediaBrowser.Controller.MediaEncoding;
 using MediaBrowser.Controller.Plugins;
+using MediaBrowser.Model.IO;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
@@ -138,9 +141,17 @@ public class PluginServiceRegistrator : IPluginServiceRegistrator
         serviceCollection.AddHostedService<IncompleteRecordingHostedService>();
 
         serviceCollection.AddSingleton<IDirectStreamCapture, FfmpegDirectStreamCapture>();
+        serviceCollection.AddSingleton<IDirectRecordingLibrary, JellyfinDirectRecordingLibrary>();
         serviceCollection.AddSingleton(provider => new DirectIptvRecordingService(
             Path.Combine(MoonfinPlugin.ResolveDataFolderPath(), "direct-iptv-recordings"),
-            provider.GetRequiredService<IDirectStreamCapture>()));
+            provider.GetRequiredService<IDirectStreamCapture>(),
+            libraryPaths: () =>
+            {
+                var config = MoonfinPlugin.Instance?.Configuration;
+                return new DirectRecordingRoots(config?.RecordingsMoviesPath, config?.RecordingsShowsPath);
+            },
+            library: provider.GetRequiredService<IDirectRecordingLibrary>(),
+            logger: provider.GetRequiredService<ILogger<DirectIptvRecordingService>>()));
         serviceCollection.AddSingleton<DispatcharrClient>();
         serviceCollection.AddSingleton<FreeTvClient>();
 

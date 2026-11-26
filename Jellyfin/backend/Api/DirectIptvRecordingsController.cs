@@ -43,7 +43,14 @@ public class DirectIptvRecordingsController : ControllerBase
             return BadRequest("tvgId, start, and end are required.");
         }
 
-        return Ok(_service.Schedule(body.TvgId!.Trim(), body.Title, start, end, body.StreamUrl, body.RecUrl));
+        return Ok(_service.Schedule(
+            body.TvgId!.Trim(),
+            body.Title,
+            start,
+            end,
+            body.StreamUrl,
+            body.RecUrl,
+            DirectRecordingPrograms.ProgramOf(body)));
     }
 
     [HttpDelete("Recordings/{id}")]
@@ -80,4 +87,106 @@ public sealed class DirectRecordingBody
 
     [JsonPropertyName("recUrl")]
     public string? RecUrl { get; set; }
+
+    [JsonPropertyName("name")]
+    public string? Name { get; set; }
+
+    [JsonPropertyName("series")]
+    public string? Series { get; set; }
+
+    [JsonPropertyName("seriesName")]
+    public string? SeriesName { get; set; }
+
+    [JsonPropertyName("episodeTitle")]
+    public string? EpisodeTitle { get; set; }
+
+    [JsonPropertyName("season")]
+    public int? Season { get; set; }
+
+    [JsonPropertyName("seasonNumber")]
+    public int? SeasonNumber { get; set; }
+
+    [JsonPropertyName("episode")]
+    public int? Episode { get; set; }
+
+    [JsonPropertyName("episodeNumber")]
+    public int? EpisodeNumber { get; set; }
+
+    [JsonPropertyName("year")]
+    public int? Year { get; set; }
+
+    [JsonPropertyName("productionYear")]
+    public int? ProductionYear { get; set; }
+
+    [JsonPropertyName("isMovie")]
+    public bool? IsMovie { get; set; }
+
+    [JsonPropertyName("category")]
+    public string? Category { get; set; }
+
+    [JsonPropertyName("categories")]
+    public List<string>? Categories { get; set; }
+
+    [JsonPropertyName("originalAirDate")]
+    public DateTime? OriginalAirDate { get; set; }
+
+    [JsonPropertyName("premiereDate")]
+    public DateTime? PremiereDate { get; set; }
+
+    [JsonPropertyName("program")]
+    public DirectRecordingBody? Program { get; set; }
+}
+
+internal static class DirectRecordingPrograms
+{
+    public static DirectRecordingProgram ProgramOf(DirectRecordingBody body)
+    {
+        var nested = body.Program;
+        return new DirectRecordingProgram
+        {
+            Title = First(body.Title, body.Name, nested?.Title, nested?.Name, body.Series, body.SeriesName),
+            Series = First(body.Series, body.SeriesName, nested?.Series, nested?.SeriesName, body.Title, nested?.Title),
+            EpisodeTitle = First(body.EpisodeTitle, nested?.EpisodeTitle),
+            Season = body.Season ?? body.SeasonNumber ?? nested?.Season ?? nested?.SeasonNumber,
+            Episode = body.Episode ?? body.EpisodeNumber ?? nested?.Episode ?? nested?.EpisodeNumber,
+            Year = body.Year ?? body.ProductionYear ?? nested?.Year ?? nested?.ProductionYear,
+            IsMovie = body.IsMovie ?? nested?.IsMovie,
+            Category = CategoryOf(body) ?? CategoryOf(nested),
+            OriginalAirDate = body.OriginalAirDate ?? body.PremiereDate ?? nested?.OriginalAirDate ?? nested?.PremiereDate,
+        };
+    }
+
+    private static string? CategoryOf(DirectRecordingBody? body)
+    {
+        if (body == null)
+        {
+            return null;
+        }
+
+        if (!string.IsNullOrWhiteSpace(body.Category))
+        {
+            return body.Category.Trim();
+        }
+
+        if (body.Categories == null)
+        {
+            return null;
+        }
+
+        var parts = body.Categories.Where(part => !string.IsNullOrWhiteSpace(part)).Select(part => part.Trim()).ToList();
+        return parts.Count == 0 ? null : string.Join(", ", parts);
+    }
+
+    private static string? First(params string?[] values)
+    {
+        foreach (var value in values)
+        {
+            if (!string.IsNullOrWhiteSpace(value))
+            {
+                return value.Trim();
+            }
+        }
+
+        return null;
+    }
 }

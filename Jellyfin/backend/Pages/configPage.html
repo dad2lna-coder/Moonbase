@@ -1440,6 +1440,21 @@
                                 Recordings shorter than this share of their scheduled time are incomplete. Default 90.
                             </div>
                         </div>
+                        <h3 class="sectionTitle" style="margin-top: 1.6em;">Direct IPTV recordings</h3>
+                        <div class="fieldDescription" style="margin-bottom: 1em;">
+                            Finished Direct IPTV recordings are moved into these folders so Jellyfin can
+                            match them like any other movie or episode. Use a folder that is already inside
+                            a Movies library and a Shows library. Leave a path blank to keep the file in the
+                            Moonbase recordings folder.
+                        </div>
+                        <div class="inputContainer">
+                            <label class="inputLabel inputLabelUnfocused" for="RecordingsMoviesPath">Movies folder</label>
+                            <input type="text" id="RecordingsMoviesPath" is="emby-input" placeholder="/media/movies/Live TV" autocomplete="off" />
+                        </div>
+                        <div class="inputContainer">
+                            <label class="inputLabel inputLabelUnfocused" for="RecordingsShowsPath">Shows folder</label>
+                            <input type="text" id="RecordingsShowsPath" is="emby-input" placeholder="/media/shows/Live TV" autocomplete="off" />
+                        </div>
                         <h3 class="sectionTitle" style="margin-top: 1.6em;">Free TV</h3>
                         <div class="fieldDescription" style="margin-bottom: 1em;">
                             MoFin stack channels ask Moonbase, and Moonbase asks this server.
@@ -7228,6 +7243,8 @@
                     document.querySelector('#LiveTvAutoRecordCompleteShowing').checked = config.LiveTvAutoRecordCompleteShowing === true;
                     document.querySelector('#LiveTvIncompleteThresholdPercent').value = config.LiveTvIncompleteThresholdPercent || 90;
                     document.querySelector('#LiveTvDeleteIncompleteCopies').checked = config.LiveTvDeleteIncompleteCopies === true;
+                    document.querySelector('#RecordingsMoviesPath').value = config.RecordingsMoviesPath || '';
+                    document.querySelector('#RecordingsShowsPath').value = config.RecordingsShowsPath || '';
                     document.querySelector('#FreeTvUrl').value = config.FreeTvUrl || 'http://192.168.1.119:3004';
                     document.querySelector('#FreeTvPublicUrl').value = config.FreeTvPublicUrl || 'https://dad2lna.duckdns.org:8443';
                     document.querySelector('#DispatcharrUrl').value = '';
@@ -8119,6 +8136,8 @@
                         config.LiveTvAutoRecordCompleteShowing = document.querySelector('#LiveTvAutoRecordCompleteShowing').checked;
                         config.LiveTvIncompleteThresholdPercent = Math.min(100, Math.max(50, parseInt(document.querySelector('#LiveTvIncompleteThresholdPercent').value, 10) || 90));
                         config.LiveTvDeleteIncompleteCopies = document.querySelector('#LiveTvDeleteIncompleteCopies').checked;
+                        config.RecordingsMoviesPath = document.querySelector('#RecordingsMoviesPath').value.trim() || null;
+                        config.RecordingsShowsPath = document.querySelector('#RecordingsShowsPath').value.trim() || null;
                         config.FreeTvUrl = document.querySelector('#FreeTvUrl').value.trim() || 'http://192.168.1.119:3004';
                         config.FreeTvPublicUrl = document.querySelector('#FreeTvPublicUrl').value.trim() || 'https://dad2lna.duckdns.org:8443';
                         delete config.DispatcharrUrl;

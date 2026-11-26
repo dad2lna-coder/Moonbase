@@ -122,6 +122,18 @@ public class PluginConfiguration : BasePluginConfiguration
     public bool LiveTvDeleteIncompleteCopies { get; set; }
 
     /// <summary>
+    /// Folder inside a Movies library. A finished Direct IPTV movie is moved here.
+    /// Empty leaves the file in the plugin recordings folder.
+    /// </summary>
+    public string? RecordingsMoviesPath { get; set; }
+
+    /// <summary>
+    /// Folder inside a Shows library. A finished Direct IPTV episode is moved here.
+    /// Empty leaves the file in the plugin recordings folder.
+    /// </summary>
+    public string? RecordingsShowsPath { get; set; }
+
+    /// <summary>
     /// Dispatcharr base URL, for example <c>http://192.168.1.20:9191</c>. Admin plugin
     /// configuration only. Moonfin API responses never include this value. A feed play URL
     /// is built from it on the server and is the only place a client sees the host.
