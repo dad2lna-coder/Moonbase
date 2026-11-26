@@ -25,6 +25,9 @@ public class DirectIptvRecordingsController : ControllerBase
         _service = service;
     }
 
+    /// <summary>
+    /// Lists jobs. itemId is resolved from the saved path on every call until Jellyfin has the file.
+    /// </summary>
     [HttpGet("Recordings")]
     [ProducesResponseType(StatusCodes.Status200OK)]
     public ActionResult<DirectRecordingListResponse> List() => Ok(_service.List());
@@ -50,7 +53,7 @@ public class DirectIptvRecordingsController : ControllerBase
             end,
             body.StreamUrl,
             body.RecUrl,
-            DirectRecordingPrograms.ProgramOf(body)));
+            DirectRecordingPrograms.ProgramOf(body, start)));
     }
 
     [HttpDelete("Recordings/{id}")]
@@ -139,9 +142,10 @@ public sealed class DirectRecordingBody
 
 internal static class DirectRecordingPrograms
 {
-    public static DirectRecordingProgram ProgramOf(DirectRecordingBody body)
+    public static DirectRecordingProgram ProgramOf(DirectRecordingBody body, DateTimeOffset start)
     {
         var nested = body.Program;
+        var suppliedAirDate = body.OriginalAirDate ?? body.PremiereDate ?? nested?.OriginalAirDate ?? nested?.PremiereDate;
         return new DirectRecordingProgram
         {
             Title = First(body.Title, body.Name, nested?.Title, nested?.Name, body.Series, body.SeriesName),
@@ -152,7 +156,9 @@ internal static class DirectRecordingPrograms
             Year = body.Year ?? body.ProductionYear ?? nested?.Year ?? nested?.ProductionYear,
             IsMovie = body.IsMovie ?? nested?.IsMovie,
             Category = CategoryOf(body) ?? CategoryOf(nested),
-            OriginalAirDate = body.OriginalAirDate ?? body.PremiereDate ?? nested?.OriginalAirDate ?? nested?.PremiereDate,
+            // No air date on the request: the server's local date of the start,
+            // not the UTC date, so an evening show keeps the evening's date.
+            OriginalAirDate = suppliedAirDate ?? DirectRecordingFiles.AirDate(start, null, TimeZoneInfo.Local),
         };
     }
 

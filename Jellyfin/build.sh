@@ -6,7 +6,7 @@
 
 set -e
 
-VERSION="${1:-2.4.6.0}"
+VERSION="${1:-2.4.7.0}"
 TARGET_ABI="${2:-10.10.0}"
 SOURCE_URL="${3:-}"
 BUILD_TIMESTAMP=$(date '+%Y-%m-%d %H:%M:%S')
@@ -111,7 +111,7 @@ cat > "$RELEASE_DIR/meta.json" <<EOF
   "timestamp": "${TIMESTAMP_ISO}",
   "version": "${VERSION}",
   "status": "Active",
-  "autoUpdate": true,
+  "autoUpdate": false,
   "assemblies": ["Moonfin.Server.dll"]
 }
 EOF

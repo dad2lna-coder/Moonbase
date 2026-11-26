@@ -1,3 +1,6 @@
+using System.Globalization;
+using System.Text.Json;
+using Moonfin.Server.Api;
 using Moonfin.Server.Services;
 using Xunit;
 
@@ -29,9 +32,13 @@ public class DirectIptvRecordingServiceTests : IDisposable
         Assert.Equal("http://secret.example/rec.ts", call.Url);
         Assert.EndsWith(created.Id + ".partial.ts", call.Output);
         var stored = File.ReadAllText(Path.Combine(_root, "jobs.json"));
+        Assert.Contains("http://secret.example/rec.ts", stored, StringComparison.Ordinal);
         Assert.DoesNotContain(secret, stored, StringComparison.Ordinal);
-        Assert.DoesNotContain("rec.ts", stored, StringComparison.Ordinal);
+        Assert.Contains("\"tempPath\"", stored, StringComparison.Ordinal);
+        Assert.Contains("\"plannedPath\"", stored, StringComparison.Ordinal);
         Assert.DoesNotContain("apiKey", stored, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(secret, JsonSerializer.Serialize(service.List()), StringComparison.Ordinal);
+        Assert.DoesNotContain("rec.ts", JsonSerializer.Serialize(service.List()), StringComparison.Ordinal);
         Assert.Equal("recording", Assert.Single(service.List().Recordings).Status);
     }
 
@@ -49,10 +56,11 @@ public class DirectIptvRecordingServiceTests : IDisposable
 
         Assert.Equal("scheduled", created.Status);
         Assert.Empty(_capture.Starts);
-        Assert.DoesNotContain(
-            "secret.example",
-            File.ReadAllText(Path.Combine(_root, "jobs.json")),
-            StringComparison.Ordinal);
+        var stored = File.ReadAllText(Path.Combine(_root, "jobs.json"));
+        Assert.Contains("http://secret.example/live.ts", stored, StringComparison.Ordinal);
+        Assert.Contains("\"plannedPath\"", stored, StringComparison.Ordinal);
+        Assert.DoesNotContain("apiKey", stored, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("secret.example", JsonSerializer.Serialize(service.List()), StringComparison.Ordinal);
         var listed = service.List().Recordings;
         Assert.Single(listed);
         Assert.Equal("scheduled", listed[0].Status);
@@ -75,11 +83,13 @@ public class DirectIptvRecordingServiceTests : IDisposable
         Assert.Equal(1, _capture.Attempts);
         Assert.Empty(_capture.Starts);
         var stored = File.ReadAllText(Path.Combine(_root, "jobs.json"));
-        Assert.DoesNotContain("secret.example", stored, StringComparison.Ordinal);
+        Assert.Contains("http://secret.example/live.ts", stored, StringComparison.Ordinal);
+        Assert.DoesNotContain("apiKey", stored, StringComparison.OrdinalIgnoreCase);
         var job = Assert.Single(service.List().Recordings);
         Assert.Equal("failed", job.Status);
         Assert.Equal("ffmpeg did not start: not found", job.FailureReason);
         Assert.Null(job.Path);
+        Assert.DoesNotContain("secret.example", JsonSerializer.Serialize(service.List()), StringComparison.Ordinal);
     }
 
     [Fact]
@@ -147,6 +157,7 @@ public class DirectIptvRecordingServiceTests : IDisposable
 
         library.Items[expected] = "6b1e1c0a-1111-2222-3333-444444444444";
         Assert.Equal("6b1e1c0a-1111-2222-3333-444444444444", Assert.Single(service.List().Recordings).ItemId);
+        Assert.True(library.Lookups >= 2);
     }
 
     [Fact]
@@ -231,13 +242,13 @@ public class DirectIptvRecordingServiceTests : IDisposable
         File.WriteAllText(
             Path.Combine(_root, "jobs.json"),
             """
-            {"jobs":[{"id":"abc","tvgId":"news","title":"Nightly","start":"2026-10-22T18:00:00+00:00","end":"2026-10-22T19:00:00+00:00"}]}
+            {"jobs":[{"id":"abc","tvgId":"news","title":"Nightly","status":"scheduled","start":"2026-10-22T18:00:00+00:00","end":"2026-10-22T19:00:00+00:00"}]}
             """);
 
         using var service = Create();
         var job = Assert.Single(service.List().Recordings);
         Assert.Equal("failed", job.Status);
-        Assert.Contains("without a file", job.FailureReason);
+        Assert.Equal("missed (server was down)", job.FailureReason);
         Assert.Null(job.Path);
     }
 
@@ -254,7 +265,7 @@ public class DirectIptvRecordingServiceTests : IDisposable
 
         File.WriteAllText(
             Path.Combine(_root, "jobs.json"),
-            "{\"jobs\":[{\"id\":\"abc\",\"tvgId\":\"hbo\",\"title\":\"Inception\",\"year\":2010,\"isMovie\":true,\"start\":\"2026-10-22T20:00:00+00:00\",\"end\":\"2026-10-22T22:00:00+00:00\",\"status\":\"recording\",\"tempPath\":\""
+            "{\"jobs\":[{\"id\":\"abc\",\"tvgId\":\"hbo\",\"title\":\"Inception\",\"year\":2010,\"isMovie\":true,\"start\":\"2026-10-22T18:00:00+00:00\",\"end\":\"2026-10-22T20:00:00+00:00\",\"status\":\"recording\",\"tempPath\":\""
             + temp.Replace("\\", "\\\\", StringComparison.Ordinal)
             + "\"}]}");
 
@@ -267,6 +278,85 @@ public class DirectIptvRecordingServiceTests : IDisposable
         Assert.True(File.Exists(expected));
         Assert.False(File.Exists(temp));
         Assert.Equal(Path.GetDirectoryName(expected), Assert.Single(library.Scanned));
+    }
+
+    [Fact]
+    public void Reload_InProgress_CapturesTheTimeLeft()
+    {
+        var end = _now.AddMinutes(30);
+        Directory.CreateDirectory(_root);
+        File.WriteAllText(
+            Path.Combine(_root, "jobs.json"),
+            "{\"jobs\":[{\"id\":\"abc\",\"tvgId\":\"news\",\"title\":\"Nightly\",\"series\":\"Nightly\",\"status\":\"scheduled\",\"streamUrl\":\"http://secret.example/live.ts\",\"tempPath\":\""
+            + Path.Combine(_root, "files", "abc.partial.ts").Replace("\\", "\\\\", StringComparison.Ordinal)
+            + "\",\"plannedPath\":\""
+            + Path.Combine(_root, "shows", "Nightly", "Nightly.ts").Replace("\\", "\\\\", StringComparison.Ordinal)
+            + "\",\"start\":\""
+            + _now.AddMinutes(-10).ToString("o", CultureInfo.InvariantCulture)
+            + "\",\"end\":\""
+            + end.ToString("o", CultureInfo.InvariantCulture)
+            + "\"}]}");
+
+        using var service = Create();
+        var job = Assert.Single(service.List().Recordings);
+        var call = Assert.Single(_capture.Starts);
+        Assert.Equal("recording", job.Status);
+        Assert.Equal("http://secret.example/live.ts", call.Url);
+        Assert.Equal(TimeSpan.FromMinutes(30), call.Duration);
+        Assert.Null(job.Path);
+        Assert.DoesNotContain("secret.example", JsonSerializer.Serialize(service.List()), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Reload_RecordingStillOpen_DoesNotFinishThePartial()
+    {
+        var temp = Path.Combine(_root, "files", "abc.partial.ts");
+        Directory.CreateDirectory(Path.GetDirectoryName(temp)!);
+        using (var stream = new FileStream(temp, FileMode.Create, FileAccess.Write))
+        {
+            stream.SetLength(DirectRecordingFiles.MinimumBytes + 8);
+        }
+
+        File.WriteAllText(
+            Path.Combine(_root, "jobs.json"),
+            "{\"jobs\":[{\"id\":\"abc\",\"tvgId\":\"hbo\",\"title\":\"Inception\",\"year\":2010,\"isMovie\":true,\"status\":\"recording\",\"streamUrl\":\"http://secret.example/live.ts\",\"tempPath\":\""
+            + temp.Replace("\\", "\\\\", StringComparison.Ordinal)
+            + "\",\"start\":\"2026-10-22T20:00:00+00:00\",\"end\":\"2026-10-22T22:00:00+00:00\"}]}");
+
+        var movies = Path.Combine(_root, "movies");
+        using var service = Create(paths: () => new DirectRecordingRoots(movies, null));
+        var job = Assert.Single(service.List().Recordings);
+        Assert.Equal("recording", job.Status);
+        Assert.Null(job.Path);
+        Assert.True(File.Exists(temp));
+        Assert.False(File.Exists(Path.Combine(movies, "Inception (2010)", "Inception (2010).ts")));
+        Assert.Equal(TimeSpan.FromMinutes(90), Assert.Single(_capture.Starts).Duration);
+    }
+
+    [Fact]
+    public async Task Reload_FutureJob_RearmsAndCapturesWhenTheWindowOpens()
+    {
+        var start = _now.AddMilliseconds(200);
+        var end = _now.AddHours(1);
+        Directory.CreateDirectory(_root);
+        File.WriteAllText(
+            Path.Combine(_root, "jobs.json"),
+            "{\"jobs\":[{\"id\":\"abc\",\"tvgId\":\"news\",\"title\":\"Later\",\"status\":\"scheduled\",\"streamUrl\":\"http://secret.example/live.ts\",\"start\":\""
+            + start.ToString("o", CultureInfo.InvariantCulture)
+            + "\",\"end\":\""
+            + end.ToString("o", CultureInfo.InvariantCulture)
+            + "\"}]}");
+
+        using var service = Create();
+        Assert.Equal("scheduled", Assert.Single(service.List().Recordings).Status);
+        Assert.Empty(_capture.Starts);
+
+        await Task.Delay(2000);
+
+        var job = Assert.Single(service.List().Recordings);
+        Assert.Equal("recording", job.Status);
+        Assert.Equal("http://secret.example/live.ts", Assert.Single(_capture.Starts).Url);
+        Assert.Equal(end - _now, _capture.Starts[0].Duration);
     }
 
     public void Dispose()
@@ -292,7 +382,7 @@ public class DirectIptvRecordingServiceTests : IDisposable
 
         public int Attempts { get; private set; }
 
-        public List<(string Id, string Url, string Output)> Starts { get; } = new();
+        public List<(string Id, string Url, string Output, TimeSpan Duration)> Starts { get; } = new();
 
         public List<string> Stopped { get; } = new();
 
@@ -309,7 +399,7 @@ public class DirectIptvRecordingServiceTests : IDisposable
                 return new DirectCaptureStart(false, Failure ?? "capture did not start");
             }
 
-            Starts.Add((id, url, outputPath));
+            Starts.Add((id, url, outputPath, duration));
             if (onExit != null)
             {
                 _exits[id] = onExit;
@@ -341,12 +431,17 @@ public class DirectIptvRecordingServiceTests : IDisposable
     {
         public List<string> Scanned { get; } = new();
 
+        public int Lookups { get; private set; }
+
         public Dictionary<string, string> Items { get; } = new(StringComparer.Ordinal);
 
         public void ScanFolder(string folderPath) => Scanned.Add(folderPath);
 
-        public string? FindItemId(string filePath) =>
-            Items.TryGetValue(filePath, out var id) ? id : null;
+        public string? FindItemId(string filePath)
+        {
+            Lookups++;
+            return Items.TryGetValue(filePath, out var id) ? id : null;
+        }
     }
 }
 
@@ -413,7 +508,47 @@ public class DirectRecordingFileTests : IDisposable
             _start);
 
         Assert.Equal(Path.Combine(shows, "News", "News - 2024-05-06 - Nightly.ts"), dated);
-        Assert.Equal(Path.Combine(shows, "News", "News - 2024-05-06.ts"), fromStart);
+        var localDay = DirectRecordingFiles.AirDate(_start, null, TimeZoneInfo.Local).ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+        Assert.Equal(Path.Combine(shows, "News", "News - " + localDay + ".ts"), fromStart);
+    }
+
+    [Fact]
+    public void Show_WithoutAirDate_UsesTheZoneItIsGiven_NotUtc()
+    {
+        var start = new DateTimeOffset(2024, 5, 7, 1, 30, 0, TimeSpan.Zero);
+        var chicago = TimeZoneInfo.FindSystemTimeZoneById("America/Chicago");
+        var localEvening = DirectRecordingFiles.AirDate(start, null, chicago);
+        Assert.Equal(new DateTime(2024, 5, 6), localEvening);
+
+        var kept = DirectRecordingFiles.AirDate(start, new DateTime(1999, 1, 2), chicago);
+        Assert.Equal(new DateTime(1999, 1, 2), kept);
+
+        var shows = Path.Combine(_root, "shows");
+        var path = DirectRecordingFiles.BuildDestination(
+            Fallback(),
+            null,
+            shows,
+            new DirectRecordingProgram { Title = "News" },
+            start);
+        var day = DirectRecordingFiles.AirDate(start, null, TimeZoneInfo.Local).ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+        Assert.Equal(Path.Combine(shows, "News", "News - " + day + ".ts"), path);
+        if (day != "2024-05-07")
+        {
+            Assert.DoesNotContain("2024-05-07", path, StringComparison.Ordinal);
+        }
+    }
+
+    [Fact]
+    public void ProgramOf_WithoutAirDate_UsesTheServerLocalStart()
+    {
+        var start = new DateTimeOffset(2024, 5, 7, 1, 30, 0, TimeSpan.Zero);
+        var program = DirectRecordingPrograms.ProgramOf(new DirectRecordingBody { Title = "News" }, start);
+        Assert.Equal(DirectRecordingFiles.AirDate(start, null, TimeZoneInfo.Local), program.OriginalAirDate);
+
+        var supplied = DirectRecordingPrograms.ProgramOf(
+            new DirectRecordingBody { OriginalAirDate = new DateTime(1999, 1, 2), Title = "News" },
+            start);
+        Assert.Equal(new DateTime(1999, 1, 2), supplied.OriginalAirDate);
     }
 
     [Fact]

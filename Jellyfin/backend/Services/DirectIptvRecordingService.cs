@@ -372,6 +372,15 @@ public sealed class JellyfinDirectRecordingLibrary : IDirectRecordingLibrary
             return;
         }
 
+        // Validation walks the parent of a brand-new series or movie folder.
+        // That must not block the capture thread, and it must not sit on
+        // GetAwaiter().GetResult().
+        _ = Task.Run(() => ScanFolderAsync(folderPath));
+    }
+
+    private async Task ScanFolderAsync(string folderPath)
+    {
+        var validated = false;
         try
         {
             var cursor = folderPath;
@@ -399,21 +408,40 @@ public sealed class JellyfinDirectRecordingLibrary : IDirectRecordingLibrary
                     Path.GetFullPath(folder.Path),
                     Path.GetFullPath(folderPath),
                     StringComparison.OrdinalIgnoreCase);
-                // A folder Jellyfin already has is validated in full. A library root, used
-                // only because the movie or series directory is new, is validated one level
-                // deep so the rest of that library is left alone.
+                // A library root found only because the series or movie folder is new
+                // used to be validated one level deep, which never reached the file
+                // (or the season folder under it). Always walk that parent recursively.
                 var options = new MetadataRefreshOptions(new DirectoryService(_fileSystem));
-                folder.ValidateChildren(
+                await folder.ValidateChildren(
                     new Progress<double>(),
                     options,
-                    recursive: sameFolder || !folder.IsTopParent,
+                    recursive: true,
                     allowRemoveRoot: false,
-                    CancellationToken.None).GetAwaiter().GetResult();
+                    CancellationToken.None).ConfigureAwait(false);
+                validated = true;
+                _logger.LogInformation(
+                    "Direct IPTV recording validated {Path} from {Folder} (same folder {SameFolder})",
+                    folderPath,
+                    folder.Path,
+                    sameFolder);
             }
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Direct IPTV recording library validation failed for {Path}", folderPath);
+        }
+
+        if (!validated)
+        {
+            try
+            {
+                _library.QueueLibraryScan();
+                _logger.LogInformation("Direct IPTV recording queued a library scan for {Path}", folderPath);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Direct IPTV recording library scan could not be queued for {Path}", folderPath);
+            }
         }
 
         try
@@ -458,6 +486,22 @@ public static class DirectRecordingFiles
 
     public static bool IsMovie(bool? isMovie, string? category) =>
         isMovie == true || IsMovieCategory(category);
+
+    /// <summary>
+    /// The day written into a show filename. A supplied air date wins. Otherwise
+    /// the start is converted to the server's local zone, not left as UTC, so an
+    /// evening show does not roll onto the next date.
+    /// </summary>
+    public static DateTime AirDate(DateTimeOffset start, DateTime? originalAirDate, TimeZoneInfo zone)
+    {
+        if (originalAirDate.HasValue)
+        {
+            return originalAirDate.Value;
+        }
+
+        var local = TimeZoneInfo.ConvertTime(start, zone);
+        return DateTime.SpecifyKind(local.Date, DateTimeKind.Unspecified);
+    }
 
     public static string BuildDestination(
         string pluginFilePath,
@@ -529,7 +573,7 @@ public static class DirectRecordingFiles
             return Path.Combine(root, series, "Season " + ss, name + ".ts");
         }
 
-        var aired = program.OriginalAirDate ?? start.DateTime;
+        var aired = AirDate(start, program.OriginalAirDate, TimeZoneInfo.Local);
         var day = aired.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
         var dated = string.IsNullOrEmpty(episodeTitle)
             ? series + " - " + day
@@ -632,9 +676,10 @@ public sealed class DirectRecordingListResponse
 }
 
 /// <summary>
-/// Direct IPTV recordings for the signed-in user. The job file keeps the
-/// guide identity only. Stream URLs stay in memory until capture starts, and
-/// no API key is stored.
+/// Direct IPTV recordings for the signed-in user. Each job stores the guide
+/// fields, the start and end, the http(s) stream URL, and the temp and library
+/// paths so a restart can arm or resume the capture. The URL is not returned
+/// by the recordings API. No API key is stored.
 /// </summary>
 public sealed class DirectIptvRecordingService : IDisposable
 {
@@ -683,6 +728,9 @@ public sealed class DirectIptvRecordingService : IDisposable
     {
         var id = Guid.NewGuid().ToString("n");
         var guide = program ?? new DirectRecordingProgram();
+        var url = FfmpegDirectStreamCapture.IsHttp(recUrl)
+            ? recUrl!.Trim()
+            : FfmpegDirectStreamCapture.IsHttp(streamUrl) ? streamUrl!.Trim() : null;
         var job = new StoredJob
         {
             Id = id,
@@ -695,40 +743,49 @@ public sealed class DirectIptvRecordingService : IDisposable
             Year = guide.Year,
             IsMovie = guide.IsMovie,
             Category = BlankToNull(guide.Category),
-            OriginalAirDate = guide.OriginalAirDate,
+            OriginalAirDate = guide.OriginalAirDate ?? DirectRecordingFiles.AirDate(start, null, TimeZoneInfo.Local),
             Start = start.ToUniversalTime(),
             End = end.ToUniversalTime(),
             Status = "scheduled",
+            StreamUrl = url,
+            TempPath = TempPath(id),
         };
         lock (_gate)
         {
+            try
+            {
+                job.PlannedPath = Destination(job);
+            }
+            catch (Exception ex)
+            {
+                job.Status = "failed";
+                job.Error = "Could not choose a library path: " + ex.Message;
+            }
+
             _jobs[id] = job;
             SaveLocked();
+            if (string.Equals(job.Status, "failed", StringComparison.Ordinal))
+            {
+                return ToView(job);
+            }
         }
 
-        // Prefer the recording hint. Neither URL is written into the job file.
-        var url = FfmpegDirectStreamCapture.IsHttp(recUrl)
-            ? recUrl!.Trim()
-            : FfmpegDirectStreamCapture.IsHttp(streamUrl) ? streamUrl!.Trim() : null;
+        var now = _clock();
         if (url == null)
         {
             MarkFailed(id, "No http(s) stream URL was provided.");
         }
+        else if (now >= job.End)
+        {
+            MarkFailed(id, "The recording window had already ended.");
+        }
+        else if (now >= job.Start)
+        {
+            BeginCapture(id, url, job.End - now);
+        }
         else
         {
-            var now = _clock();
-            if (now >= job.End)
-            {
-                MarkFailed(id, "The recording window had already ended.");
-            }
-            else if (now >= job.Start)
-            {
-                BeginCapture(id, url, job.End - now);
-            }
-            else
-            {
-                Arm(id, url, job.Start, job.End);
-            }
+            Arm(id, url, job.Start, job.End);
         }
 
         lock (_gate)
@@ -739,6 +796,17 @@ public sealed class DirectIptvRecordingService : IDisposable
 
     public DirectRecordingListResponse List()
     {
+        List<string> scans;
+        lock (_gate)
+        {
+            scans = CloseExpiredLocked();
+        }
+
+        foreach (var folder in scans)
+        {
+            _library?.ScanFolder(folder);
+        }
+
         lock (_gate)
         {
             return new DirectRecordingListResponse
@@ -874,8 +942,15 @@ public sealed class DirectIptvRecordingService : IDisposable
                 return;
             }
 
-            temp = TempPath(id);
+            if (string.Equals(job.Status, "completed", StringComparison.Ordinal)
+                || string.Equals(job.Status, "failed", StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            temp = string.IsNullOrWhiteSpace(job.TempPath) ? TempPath(id) : job.TempPath;
             job.TempPath = temp;
+            job.StreamUrl = url;
             job.Status = "recording";
             job.Error = null;
             SaveLocked();
@@ -947,7 +1022,7 @@ public sealed class DirectIptvRecordingService : IDisposable
             job.Status = "completed";
             job.Error = null;
             job.OutputPath = destination;
-            job.TempPath = null;
+            job.PlannedPath ??= destination;
             SaveLocked();
             return Path.GetDirectoryName(destination);
         }
@@ -984,6 +1059,11 @@ public sealed class DirectIptvRecordingService : IDisposable
 
     private string Destination(StoredJob job)
     {
+        if (!string.IsNullOrWhiteSpace(job.PlannedPath))
+        {
+            return job.PlannedPath;
+        }
+
         var roots = _roots?.Invoke() ?? new DirectRecordingRoots(null, null);
         return DirectRecordingFiles.BuildDestination(
             PluginFile(job.Id),
@@ -1022,7 +1102,9 @@ public sealed class DirectIptvRecordingService : IDisposable
             return;
         }
 
-        List<string> scans = new();
+        var scans = new List<string>();
+        var capture = new List<PendingCapture>();
+        var arm = new List<PendingArm>();
         try
         {
             var stored = JsonSerializer.Deserialize<StoredFile>(File.ReadAllText(_storePath), Json);
@@ -1040,7 +1122,7 @@ public sealed class DirectIptvRecordingService : IDisposable
                 }
 
                 _jobs[job.Id] = job;
-                if (Reconcile(job, scans))
+                if (Resume(job, scans, capture, arm))
                 {
                     changed = true;
                 }
@@ -1061,14 +1143,95 @@ public sealed class DirectIptvRecordingService : IDisposable
         {
             _library?.ScanFolder(folder);
         }
+
+        foreach (var item in capture)
+        {
+            BeginCapture(item.Id, item.Url, item.Remaining);
+        }
+
+        foreach (var item in arm)
+        {
+            Arm(item.Id, item.Url, item.Start, item.End);
+        }
     }
 
-    private bool Reconcile(StoredJob job, List<string> scans)
+    /// <summary>
+    /// A future job is armed again. A window that is open starts capturing for
+    /// the time left. A window that already ended with no usable file is failed
+    /// as missed, so nothing stays scheduled after its end.
+    /// </summary>
+    private bool Resume(StoredJob job, List<string> scans, List<PendingCapture> capture, List<PendingArm> arm)
     {
-        if (string.Equals(job.Status, "recording", StringComparison.Ordinal))
+        if (string.Equals(job.Status, "completed", StringComparison.Ordinal)
+            || string.Equals(job.Status, "failed", StringComparison.Ordinal))
         {
-            var temp = string.IsNullOrWhiteSpace(job.TempPath) ? TempPath(job.Id) : job.TempPath;
-            var folder = AcceptLocked(job, temp, "ffmpeg was not running when Moonbase started, and the file is missing or not larger than 1 MB.");
+            return false;
+        }
+
+        var now = _clock();
+        if (now >= job.End)
+        {
+            return FinishMissedLocked(job, scans);
+        }
+
+        var url = UsableUrl(job.StreamUrl);
+        if (url == null)
+        {
+            job.Status = "failed";
+            job.Error = "No http(s) stream URL was provided.";
+            return true;
+        }
+
+        if (string.IsNullOrWhiteSpace(job.TempPath))
+        {
+            job.TempPath = TempPath(job.Id);
+        }
+
+        if (now >= job.Start)
+        {
+            capture.Add(new PendingCapture(job.Id, url, job.End - now));
+            return !string.Equals(job.Status, "recording", StringComparison.Ordinal);
+        }
+
+        var changed = !string.Equals(job.Status, "scheduled", StringComparison.Ordinal);
+        job.Status = "scheduled";
+        job.Error = null;
+        arm.Add(new PendingArm(job.Id, url, job.Start, job.End));
+        return changed;
+    }
+
+    private List<string> CloseExpiredLocked()
+    {
+        var scans = new List<string>();
+        var now = _clock();
+        var changed = false;
+        foreach (var job in _jobs.Values)
+        {
+            if (!string.Equals(job.Status, "scheduled", StringComparison.Ordinal) || now < job.End)
+            {
+                continue;
+            }
+
+            if (FinishMissedLocked(job, scans))
+            {
+                changed = true;
+            }
+        }
+
+        if (changed)
+        {
+            SaveLocked();
+        }
+
+        return scans;
+    }
+
+    private bool FinishMissedLocked(StoredJob job, List<string> scans)
+    {
+        var file = LargeFile(job);
+        if (file != null)
+        {
+            var folder = AcceptLocked(job, file, "missed (server was down)");
             if (folder != null)
             {
                 scans.Add(folder);
@@ -1077,29 +1240,9 @@ public sealed class DirectIptvRecordingService : IDisposable
             return true;
         }
 
-        if (!string.IsNullOrWhiteSpace(job.Status))
-        {
-            return false;
-        }
-
-        var legacy = PluginFile(job.Id);
-        if (FileLength(legacy) > DirectRecordingFiles.MinimumBytes)
-        {
-            job.Status = "completed";
-            job.OutputPath = legacy;
-            job.Error = null;
-            return true;
-        }
-
-        var now = _clock();
-        if (now >= job.End || now >= job.Start)
-        {
-            job.Status = "failed";
-            job.Error = "The recording window ended without a file larger than 1 MB.";
-            return true;
-        }
-
-        job.Status = "scheduled";
+        job.Status = "failed";
+        job.Error = "missed (server was down)";
+        job.OutputPath = null;
         return true;
     }
 
@@ -1111,6 +1254,8 @@ public sealed class DirectIptvRecordingService : IDisposable
 
     private DirectRecordingView ToView(StoredJob job)
     {
+        // Look the file up on every request. A miss is not stored, so the next
+        // GET tries again until Jellyfin has picked the recording up.
         string? itemId = null;
         if (string.Equals(job.Status, "completed", StringComparison.Ordinal)
             && !string.IsNullOrWhiteSpace(job.OutputPath))
@@ -1141,6 +1286,33 @@ public sealed class DirectIptvRecordingService : IDisposable
         var text = (reason + tail).Trim();
         return text.Length <= 2000 ? text : text[^2000..];
     }
+
+    private string? LargeFile(StoredJob job)
+    {
+        var candidates = new[]
+        {
+            job.OutputPath,
+            job.TempPath,
+            string.IsNullOrWhiteSpace(job.TempPath) ? TempPath(job.Id) : null,
+            PluginFile(job.Id),
+        };
+        foreach (var path in candidates)
+        {
+            if (FileLength(path) > DirectRecordingFiles.MinimumBytes)
+            {
+                return path;
+            }
+        }
+
+        return null;
+    }
+
+    private static string? UsableUrl(string? url) =>
+        FfmpegDirectStreamCapture.IsHttp(url) ? url!.Trim() : null;
+
+    private readonly record struct PendingCapture(string Id, string Url, TimeSpan Remaining);
+
+    private readonly record struct PendingArm(string Id, string Url, DateTimeOffset Start, DateTimeOffset End);
 
     private static long FileLength(string? path)
     {
@@ -1239,6 +1411,10 @@ public sealed class DirectIptvRecordingService : IDisposable
         public string? Category { get; set; }
 
         public DateTime? OriginalAirDate { get; set; }
+
+        public string? StreamUrl { get; set; }
+
+        public string? PlannedPath { get; set; }
 
         public DateTimeOffset Start { get; set; }
 

@@ -3,7 +3,7 @@
 # Usage: .\build.ps1 [-Version "1.1.0.0"] [-TargetAbi "10.10.0"] [-SourceUrl "https://..."] [-SkipManifestUpdate]
 
 param(
-    [string]$Version = "2.4.5.0",
+    [string]$Version = "2.4.7.0",
     [string]$TargetAbi = "10.10.0",
     [string]$SourceUrl = "",
     [switch]$SkipManifestUpdate
@@ -111,7 +111,7 @@ $Meta = [ordered]@{
     timestamp = $TimestampIso
     version = $Version
     status = "Active"
-    autoUpdate = $true
+    autoUpdate = $false
     assemblies = @("Moonfin.Server.dll")
 }
 $MetaJson = ConvertTo-Json -InputObject $Meta -Depth 10

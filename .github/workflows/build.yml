@@ -178,7 +178,7 @@ jobs:
             "timestamp": "${TIMESTAMP}",
             "version": "${VERSION}",
             "status": "Active",
-            "autoUpdate": true,
+            "autoUpdate": false,
             "assemblies": ["Moonfin.Server.dll"]
           }
           EOF

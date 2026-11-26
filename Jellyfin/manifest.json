@@ -9,6 +9,15 @@
     "imageUrl": "https://raw.githubusercontent.com/Moonfin-Client/Plugin/master/Jellyfin/backend/assets/logo.png",
     "versions": [
       {
+        "version": "2.4.7.0",
+        "changelog": "Moonbase 2.4.7 keeps Direct IPTV recordings across a restart. Each job stores the http(s) stream URL, the start and end, the guide fields, and the temp and library paths. On startup a future job is armed again, a job whose window is still open starts capturing for the time left, and a window that already ended with no file is failed with reason \"missed (server was down)\". A job does not stay scheduled after its end. When no original air date is sent, the show date is the start in the server local time zone, not UTC. After the file is moved, a new series or movie folder is validated through its parent in the background, without blocking on GetResult, and GET /Moonfin/LiveTv/Direct/Recordings looks the file up by path on every request until Jellyfin has an item id. The packaged meta.json sets autoUpdate to false. This package is the server plugin only and does not replace the bundled Moonfin web app.",
+        "targetAbi": "10.10.0.0",
+        "sourceUrl": "https://github.com/dad2lna-coder/Moonbase/releases/download/2.4.7/Moonfin.Server-2.4.7.0.zip",
+        "checksum": "AEE15450C5EBF42517E8502FC6A1F3DF",
+        "timestamp": "2026-11-26T19:04:30",
+        "dependencies": []
+      },
+      {
         "version": "2.4.6.0",
         "changelog": "Moonbase 2.4.6 saves Direct IPTV recordings into the Movies and Shows libraries. ffmpeg is Jellyfin's configured encoder, then /usr/lib/jellyfin-ffmpeg/ffmpeg, then ffmpeg on PATH. A job stays recording only while ffmpeg is running, and it is completed only when the saved file is larger than 1 MB. Otherwise it is failed, with the reason. The end time alone no longer marks a job completed. Movies go to RecordingsMoviesPath as Title (Year)/Title (Year).ts. Episodes go to RecordingsShowsPath as Series/Season SS/Series - SxxExx - EpisodeTitle.ts, or by air date when there is no season and episode. An IsMovie flag or a movie category chooses a movie. Empty paths keep the file in the plugin recordings folder. GET /Moonfin/LiveTv/Direct/Recordings returns status, failureReason, path, and itemId once Jellyfin has picked the file up. Deleting a job does not delete a finished library file. Set the two folders on the Live TV tab. This package is the server plugin only and does not replace the bundled Moonfin web app.",
         "targetAbi": "10.10.0.0",
