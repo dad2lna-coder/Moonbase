@@ -9,6 +9,15 @@
     "imageUrl": "https://raw.githubusercontent.com/Moonfin-Client/Plugin/master/Jellyfin/backend/assets/logo.png",
     "versions": [
       {
+        "version": "2.4.8.0",
+        "changelog": "Moonbase 2.4.8 records Free TV HLS streams whose segment URLs have no file extension. ffmpeg is given -allowed_extensions ALL, -allowed_segment_extensions ALL, and -extension_picky 0 before the input, which Jellyfin's ffmpeg 8 needs or the copy exits immediately and writes nothing. ffmpeg errors stored on the job and in the log have URLs and query strings removed, so a signed stream token is not written into jobs.json. A restart in the middle of a recording no longer overwrites the partial file already on disk. The new ffmpeg process writes the next temp file, and the finished recording keeps the best capture, joining the mpegts parts when that is safe. This package is the server plugin only and does not replace the bundled Moonfin web app.",
+        "targetAbi": "10.10.0.0",
+        "sourceUrl": "https://github.com/dad2lna-coder/Moonbase/releases/download/2.4.8/Moonfin.Server-2.4.8.0.zip",
+        "checksum": "B9EFE5601EBEB425CB28CB441B8AA95A",
+        "timestamp": "2026-11-27T15:59:34",
+        "dependencies": []
+      },
+      {
         "version": "2.4.7.0",
         "changelog": "Moonbase 2.4.7 keeps Direct IPTV recordings across a restart. Each job stores the http(s) stream URL, the start and end, the guide fields, and the temp and library paths. On startup a future job is armed again, a job whose window is still open starts capturing for the time left, and a window that already ended with no file is failed with reason \"missed (server was down)\". A job does not stay scheduled after its end. When no original air date is sent, the show date is the start in the server local time zone, not UTC. After the file is moved, a new series or movie folder is validated through its parent in the background, without blocking on GetResult, and GET /Moonfin/LiveTv/Direct/Recordings looks the file up by path on every request until Jellyfin has an item id. The packaged meta.json sets autoUpdate to false. This package is the server plugin only and does not replace the bundled Moonfin web app.",
         "targetAbi": "10.10.0.0",

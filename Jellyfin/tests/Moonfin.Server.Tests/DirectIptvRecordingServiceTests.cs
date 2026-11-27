@@ -359,6 +359,105 @@ public class DirectIptvRecordingServiceTests : IDisposable
         Assert.Equal(end - _now, _capture.Starts[0].Duration);
     }
 
+    [Fact]
+    public void FfmpegFailure_RedactsStreamUrls_AndKeepsThePlaylistError()
+    {
+        using var service = Create();
+        var created = service.Schedule(
+            "news",
+            "Nightly",
+            _now.AddMinutes(-5),
+            _now.AddMinutes(20),
+            "http://secret.example/live.ts",
+            null);
+
+        const string token = "signed-stream-token";
+        var stream = "http://192.168.1.119:3004/mofin/free/r?token=" + token;
+        _capture.WriteAndFinish(
+            created.Id,
+            0,
+            exitCode: 234,
+            stderr: "URL " + stream + " is not in allowed_segment_extensions\nparse_playlist error Invalid data found when processing input");
+
+        var job = Assert.Single(service.List().Recordings);
+        Assert.Equal("failed", job.Status);
+        Assert.Contains("234", job.FailureReason, StringComparison.Ordinal);
+        Assert.Contains("allowed_segment_extensions", job.FailureReason, StringComparison.Ordinal);
+        Assert.Contains("parse_playlist", job.FailureReason, StringComparison.Ordinal);
+        Assert.DoesNotContain(token, job.FailureReason, StringComparison.Ordinal);
+        Assert.DoesNotContain(stream, job.FailureReason, StringComparison.Ordinal);
+        var stored = File.ReadAllText(Path.Combine(_root, "jobs.json"));
+        Assert.DoesNotContain(token, stored, StringComparison.Ordinal);
+        Assert.DoesNotContain("mofin/free/r", stored, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Reload_OpenRecording_DoesNotClobberThePartial_AndJoinsMpegTsParts()
+    {
+        var first = Path.Combine(_root, "files", "abc.partial.ts");
+        WriteMpegTs(first, 2800);
+        var firstLength = new FileInfo(first).Length;
+        var movies = Path.Combine(_root, "movies");
+        File.WriteAllText(
+            Path.Combine(_root, "jobs.json"),
+            "{\"jobs\":[{\"id\":\"abc\",\"tvgId\":\"hbo\",\"title\":\"Inception\",\"year\":2010,\"isMovie\":true,\"status\":\"recording\",\"streamUrl\":\"http://secret.example/live.ts\",\"tempPath\":\""
+            + first.Replace("\\", "\\\\", StringComparison.Ordinal)
+            + "\",\"start\":\"2026-10-22T20:00:00+00:00\",\"end\":\"2026-10-22T22:00:00+00:00\"}]}");
+
+        using var service = Create(paths: () => new DirectRecordingRoots(movies, null));
+        var call = Assert.Single(_capture.Starts);
+        Assert.Equal("abc-2.partial.ts", Path.GetFileName(call.Output));
+        Assert.Equal(firstLength, new FileInfo(first).Length);
+        Assert.NotEqual(Path.GetFullPath(first), Path.GetFullPath(call.Output));
+
+        WriteMpegTs(call.Output, 2800);
+        _capture.Finish("abc");
+
+        var expected = Path.Combine(movies, "Inception (2010)", "Inception (2010).ts");
+        var listed = Assert.Single(service.List().Recordings);
+        Assert.Equal("completed", listed.Status);
+        Assert.Equal(expected, listed.Path);
+        Assert.Equal(firstLength * 2, new FileInfo(expected).Length);
+        Assert.Equal(0x47, File.ReadAllBytes(expected)[0]);
+        Assert.False(File.Exists(first));
+        Assert.False(File.Exists(call.Output));
+    }
+
+    [Fact]
+    public void Reload_OpenRecording_SkipsEveryPartialThatAlreadyHasData()
+    {
+        var first = Path.Combine(_root, "files", "abc.partial.ts");
+        var second = Path.Combine(_root, "files", "abc-2.partial.ts");
+        Directory.CreateDirectory(Path.GetDirectoryName(first)!);
+        File.WriteAllBytes(first, [0x47, 1, 2, 3]);
+        File.WriteAllBytes(second, [0x47, 4, 5, 6, 7]);
+        File.WriteAllText(
+            Path.Combine(_root, "jobs.json"),
+            "{\"jobs\":[{\"id\":\"abc\",\"tvgId\":\"news\",\"title\":\"Nightly\",\"status\":\"recording\",\"streamUrl\":\"http://secret.example/live.ts\",\"tempPath\":\""
+            + second.Replace("\\", "\\\\", StringComparison.Ordinal)
+            + "\",\"start\":\"2026-10-22T20:00:00+00:00\",\"end\":\"2026-10-22T22:00:00+00:00\"}]}");
+
+        using var service = Create();
+        var call = Assert.Single(_capture.Starts);
+        Assert.Equal("abc-3.partial.ts", Path.GetFileName(call.Output));
+        Assert.Equal(4, new FileInfo(first).Length);
+        Assert.Equal(5, new FileInfo(second).Length);
+        Assert.Equal("recording", Assert.Single(service.List().Recordings).Status);
+        Assert.False(File.Exists(call.Output));
+    }
+
+    private static void WriteMpegTs(string path, int packets)
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        var packet = new byte[188];
+        packet[0] = 0x47;
+        using var stream = new FileStream(path, FileMode.Create, FileAccess.Write);
+        for (var i = 0; i < packets; i++)
+        {
+            stream.Write(packet);
+        }
+    }
+
     public void Dispose()
     {
         if (Directory.Exists(_root))
@@ -417,6 +516,11 @@ public class DirectIptvRecordingServiceTests : IDisposable
                 stream.SetLength(bytes);
             }
 
+            _exits[id](new DirectCaptureExit(exitCode, stderr));
+        }
+
+        public void Finish(string id, int exitCode = 0, string stderr = "")
+        {
             _exits[id](new DirectCaptureExit(exitCode, stderr));
         }
 
@@ -598,6 +702,57 @@ public class DirectRecordingFileTests : IDisposable
             path => jellyfinExists && path == FfmpegDirectStreamCapture.JellyfinEncoderPath || path == "/opt/jellyfin/ffmpeg");
 
         Assert.Equal(expected, resolved);
+    }
+
+    [Fact]
+    public void CaptureArguments_AllowExtensionlessHlsSegmentsBeforeInput()
+    {
+        var args = FfmpegDirectStreamCapture.BuildArguments(
+            "http://example.test/mofin/free/s/1.m3u8",
+            5,
+            "out.partial.ts").ToList();
+        var input = args.IndexOf("-i");
+        Assert.True(input > 0);
+        Assert.Equal(
+            new[]
+            {
+                "-allowed_extensions",
+                "ALL",
+                "-allowed_segment_extensions",
+                "ALL",
+                "-extension_picky",
+                "0",
+            },
+            args.Skip(args.IndexOf("-allowed_extensions")).Take(6));
+        Assert.True(args.IndexOf("-allowed_extensions") < input);
+        Assert.True(args.IndexOf("-allowed_segment_extensions") < input);
+        Assert.True(args.IndexOf("-extension_picky") < input);
+        Assert.Equal("0", args[args.IndexOf("-extension_picky") + 1]);
+        Assert.Equal("http://example.test/mofin/free/s/1.m3u8", args[input + 1]);
+        Assert.Equal("out.partial.ts", args[^1]);
+    }
+
+    [Fact]
+    public void StderrTail_DropsSignedUrls_AndKeepsThePlaylistError()
+    {
+        var token = new string('a', 5000);
+        var tail = FfmpegDirectStreamCapture.TailOf(new[]
+        {
+            "URL http://example.test/mofin/free/r?token=" + token + " is not in allowed_segment_extensions",
+            "parse_playlist error Invalid data found when processing input",
+        });
+
+        Assert.Contains("allowed_segment_extensions", tail, StringComparison.Ordinal);
+        Assert.Contains("parse_playlist", tail, StringComparison.Ordinal);
+        Assert.DoesNotContain(token, tail, StringComparison.Ordinal);
+        Assert.DoesNotContain("http://", tail, StringComparison.Ordinal);
+        Assert.True(tail.Length <= 2000);
+
+        var query = FfmpegDirectStreamCapture.RedactStreamSecrets(
+            "leftover ?token=signed-stream-token&sig=abc is not in allowed_segment_extensions");
+        Assert.Contains("allowed_segment_extensions", query, StringComparison.Ordinal);
+        Assert.DoesNotContain("signed-stream-token", query, StringComparison.Ordinal);
+        Assert.DoesNotContain("sig=abc", query, StringComparison.Ordinal);
     }
 
     public void Dispose()

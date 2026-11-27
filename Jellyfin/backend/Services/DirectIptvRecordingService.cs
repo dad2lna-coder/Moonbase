@@ -4,6 +4,7 @@ using System.Globalization;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Text.RegularExpressions;
 using MediaBrowser.Controller.Entities;
 using MediaBrowser.Controller.Entities.Movies;
 using MediaBrowser.Controller.Library;
@@ -39,6 +40,17 @@ public readonly record struct DirectCaptureExit(int ExitCode, string StderrTail)
 public sealed class FfmpegDirectStreamCapture : IDirectStreamCapture
 {
     public const string JellyfinEncoderPath = "/usr/lib/jellyfin-ffmpeg/ffmpeg";
+
+    private const int StderrTailLimit = 2000;
+
+    private static readonly Regex UrlPattern = new(
+        @"https?://[^\s""'<>]+",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled | RegexOptions.CultureInvariant);
+
+    // A signed URL can be long enough that only its query string remains in a trimmed line.
+    private static readonly Regex QueryPattern = new(
+        @"(?:\?|&)(?:[A-Za-z0-9_.~%+\-]+=[^\s""'<>&]*)+",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
     private readonly ILogger<FfmpegDirectStreamCapture> _logger;
     private readonly IMediaEncoder? _encoder;
@@ -91,18 +103,10 @@ public sealed class FfmpegDirectStreamCapture : IDirectStreamCapture
                 RedirectStandardOutput = true,
                 CreateNoWindow = true,
             };
-            start.ArgumentList.Add("-nostdin");
-            start.ArgumentList.Add("-hide_banner");
-            start.ArgumentList.Add("-loglevel");
-            start.ArgumentList.Add("warning");
-            start.ArgumentList.Add("-y");
-            start.ArgumentList.Add("-i");
-            start.ArgumentList.Add(url);
-            start.ArgumentList.Add("-c");
-            start.ArgumentList.Add("copy");
-            start.ArgumentList.Add("-t");
-            start.ArgumentList.Add(seconds.ToString(CultureInfo.InvariantCulture));
-            start.ArgumentList.Add(outputPath);
+            foreach (var argument in BuildArguments(url, seconds, outputPath))
+            {
+                start.ArgumentList.Add(argument);
+            }
 
             _logger.LogInformation(
                 "Direct IPTV recording {RecordingId} starting {Encoder} for {Seconds}s into {Output}",
@@ -253,6 +257,64 @@ public sealed class FfmpegDirectStreamCapture : IDirectStreamCapture
         return "ffmpeg";
     }
 
+    /// <summary>
+    /// Copy arguments for one capture. The three HLS demuxer options have to
+    /// come before -i. Free TV variant playlists and segments are extensionless,
+    /// and ffmpeg 8 rejects them without all three (allowed_extensions alone
+    /// still dies on the webvtt extension check).
+    /// </summary>
+    internal static IReadOnlyList<string> BuildArguments(string url, int seconds, string outputPath)
+    {
+        return new[]
+        {
+            "-nostdin",
+            "-hide_banner",
+            "-loglevel",
+            "warning",
+            "-allowed_extensions",
+            "ALL",
+            "-allowed_segment_extensions",
+            "ALL",
+            "-extension_picky",
+            "0",
+            "-y",
+            "-i",
+            url,
+            "-c",
+            "copy",
+            "-t",
+            seconds.ToString(CultureInfo.InvariantCulture),
+            outputPath,
+        };
+    }
+
+    /// <summary>
+    /// Drops stream URLs and query strings from ffmpeg stderr before it is
+    /// logged or stored. A signed segment URL is long enough to push the real
+    /// error out of a 2000-character tail and to leave the token in the log.
+    /// </summary>
+    internal static string RedactStreamSecrets(string? text)
+    {
+        if (string.IsNullOrEmpty(text))
+        {
+            return "";
+        }
+
+        var redacted = UrlPattern.Replace(text, "[url]");
+        return QueryPattern.Replace(redacted, "[query]");
+    }
+
+    internal static string TailOf(IEnumerable<string> lines)
+    {
+        var stderr = new StringBuilder();
+        foreach (var line in lines)
+        {
+            AppendTail(stderr, line);
+        }
+
+        return Tail(stderr);
+    }
+
     private string? ReadEncoderPath()
     {
         if (_encoder == null)
@@ -278,6 +340,9 @@ public sealed class FfmpegDirectStreamCapture : IDirectStreamCapture
             return;
         }
 
+        // Redact before the line can fill the buffer. Otherwise a signed URL
+        // is what survives the 2000-character tail, and the playlist error is gone.
+        line = RedactStreamSecrets(line);
         lock (stderr)
         {
             stderr.AppendLine(line);
@@ -292,8 +357,8 @@ public sealed class FfmpegDirectStreamCapture : IDirectStreamCapture
     {
         lock (stderr)
         {
-            var text = stderr.ToString().Trim();
-            return text.Length <= 2000 ? text : text[^2000..];
+            var text = RedactStreamSecrets(stderr.ToString().Trim());
+            return text.Length <= StderrTailLimit ? text : text[..StderrTailLimit];
         }
     }
 
@@ -822,7 +887,7 @@ public sealed class DirectIptvRecordingService : IDisposable
     public bool Cancel(string id)
     {
         CancellationTokenSource? pending = null;
-        string? temp = null;
+        List<string> partials = new();
         string status;
         lock (_gate)
         {
@@ -832,7 +897,7 @@ public sealed class DirectIptvRecordingService : IDisposable
             }
 
             status = job.Status;
-            temp = job.TempPath;
+            partials = CapturePartPaths(job, job.TempPath);
             if (_pending.Remove(id, out var cts))
             {
                 pending = cts;
@@ -846,7 +911,10 @@ public sealed class DirectIptvRecordingService : IDisposable
         // A finished file belongs to the library. A partial capture does not.
         if (!string.Equals(status, "completed", StringComparison.Ordinal))
         {
-            TryDelete(temp);
+            foreach (var path in partials)
+            {
+                TryDelete(path);
+            }
         }
 
         return true;
@@ -948,7 +1016,7 @@ public sealed class DirectIptvRecordingService : IDisposable
                 return;
             }
 
-            temp = string.IsNullOrWhiteSpace(job.TempPath) ? TempPath(id) : job.TempPath;
+            temp = AllocateTempPath(job);
             job.TempPath = temp;
             job.StreamUrl = url;
             job.Status = "recording";
@@ -1001,8 +1069,8 @@ public sealed class DirectIptvRecordingService : IDisposable
 
     private string? AcceptLocked(StoredJob job, string tempPath, string failure)
     {
-        var length = FileLength(tempPath);
-        if (length <= DirectRecordingFiles.MinimumBytes)
+        var chosen = SelectRecordingFile(job, tempPath);
+        if (chosen == null)
         {
             job.Status = "failed";
             job.Error = failure;
@@ -1014,9 +1082,9 @@ public sealed class DirectIptvRecordingService : IDisposable
         try
         {
             var destination = Destination(job);
-            if (!string.Equals(Path.GetFullPath(tempPath), Path.GetFullPath(destination), StringComparison.Ordinal))
+            if (!SamePath(chosen, destination))
             {
-                MoveFile(tempPath, destination);
+                MoveFile(chosen, destination);
             }
 
             job.Status = "completed";
@@ -1024,6 +1092,7 @@ public sealed class DirectIptvRecordingService : IDisposable
             job.OutputPath = destination;
             job.PlannedPath ??= destination;
             SaveLocked();
+            DeleteCaptureParts(job, tempPath, destination);
             return Path.GetDirectoryName(destination);
         }
         catch (Exception ex)
@@ -1228,21 +1297,13 @@ public sealed class DirectIptvRecordingService : IDisposable
 
     private bool FinishMissedLocked(StoredJob job, List<string> scans)
     {
-        var file = LargeFile(job);
-        if (file != null)
+        var temp = string.IsNullOrWhiteSpace(job.TempPath) ? TempPath(job.Id) : job.TempPath;
+        var folder = AcceptLocked(job, temp, "missed (server was down)");
+        if (folder != null)
         {
-            var folder = AcceptLocked(job, file, "missed (server was down)");
-            if (folder != null)
-            {
-                scans.Add(folder);
-            }
-
-            return true;
+            scans.Add(folder);
         }
 
-        job.Status = "failed";
-        job.Error = "missed (server was down)";
-        job.OutputPath = null;
         return true;
     }
 
@@ -1279,32 +1340,321 @@ public sealed class DirectIptvRecordingService : IDisposable
 
     private static string FailureText(DirectCaptureExit exit, long bytes)
     {
-        var tail = string.IsNullOrWhiteSpace(exit.StderrTail) ? "" : " " + exit.StderrTail.Trim();
+        var tail = FfmpegDirectStreamCapture.RedactStreamSecrets(exit.StderrTail).Trim();
         var reason = bytes <= 0
             ? "ffmpeg exited " + exit.ExitCode.ToString(CultureInfo.InvariantCulture) + " and did not write a file."
             : "ffmpeg exited " + exit.ExitCode.ToString(CultureInfo.InvariantCulture) + " and the file is " + bytes.ToString(CultureInfo.InvariantCulture) + " bytes, not larger than 1 MB.";
-        var text = (reason + tail).Trim();
-        return text.Length <= 2000 ? text : text[^2000..];
+        if (tail.Length == 0)
+        {
+            return reason.Length <= 2000 ? reason : reason[..2000];
+        }
+
+        var room = 2000 - reason.Length - 1;
+        if (room <= 0)
+        {
+            return reason.Length <= 2000 ? reason : reason[..2000];
+        }
+
+        if (tail.Length > room)
+        {
+            tail = tail[..room];
+        }
+
+        return reason + " " + tail;
     }
 
-    private string? LargeFile(StoredJob job)
+    private string AllocateTempPath(StoredJob job)
     {
-        var candidates = new[]
+        var current = string.IsNullOrWhiteSpace(job.TempPath) ? TempPath(job.Id) : job.TempPath;
+        if (FileLength(current) <= 0)
         {
-            job.OutputPath,
-            job.TempPath,
-            string.IsNullOrWhiteSpace(job.TempPath) ? TempPath(job.Id) : null,
-            PluginFile(job.Id),
-        };
-        foreach (var path in candidates)
+            return current;
+        }
+
+        // -y on the path ffmpeg already filled would delete that attempt.
+        var dir = Path.GetDirectoryName(current);
+        if (string.IsNullOrEmpty(dir))
         {
-            if (FileLength(path) > DirectRecordingFiles.MinimumBytes)
+            dir = FilesDir();
+        }
+
+        for (var n = 2; n < 10000; n++)
+        {
+            var candidate = Path.Combine(dir, job.Id + "-" + n.ToString(CultureInfo.InvariantCulture) + ".partial.ts");
+            if (FileLength(candidate) <= 0)
             {
-                return path;
+                return candidate;
             }
         }
 
-        return null;
+        return Path.Combine(dir, job.Id + "-" + Guid.NewGuid().ToString("n") + ".partial.ts");
+    }
+
+    /// <summary>
+    /// The file to move into the library: mpegts parts joined in order when
+    /// every included part starts on a sync byte, otherwise the largest file
+    /// over the 1 MB minimum.
+    /// </summary>
+    private string? SelectRecordingFile(StoredJob job, string tempPath)
+    {
+        var parts = CapturePartPaths(job, tempPath)
+            .Select(path => (Path: path, Length: FileLength(path)))
+            .Where(part => part.Length > 0)
+            .ToList();
+        if (parts.Count == 0)
+        {
+            return null;
+        }
+
+        if (parts.Count >= 2)
+        {
+            var safe = parts.Where(part => IsMpegTs(part.Path)).Select(part => part.Path).ToList();
+            if (safe.Count >= 2)
+            {
+                var joined = Path.Combine(FilesDir(), job.Id + ".joined.ts");
+                if (TryConcatMpegTs(safe, joined) && FileLength(joined) > DirectRecordingFiles.MinimumBytes)
+                {
+                    return joined;
+                }
+
+                TryDelete(joined);
+            }
+        }
+
+        var best = parts
+            .OrderByDescending(part => part.Length)
+            .ThenBy(part => part.Path, StringComparer.Ordinal)
+            .First();
+        return best.Length > DirectRecordingFiles.MinimumBytes ? best.Path : null;
+    }
+
+    private List<string> CapturePartPaths(StoredJob job, string? extra)
+    {
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        var list = new List<string>();
+        void Add(string? path)
+        {
+            if (string.IsNullOrWhiteSpace(path))
+            {
+                return;
+            }
+
+            string full;
+            try
+            {
+                full = Path.GetFullPath(path);
+            }
+            catch (Exception)
+            {
+                return;
+            }
+
+            if (!seen.Add(full) || PartialIndex(job.Id, full) == int.MaxValue)
+            {
+                return;
+            }
+
+            list.Add(path);
+        }
+
+        Add(extra);
+        Add(job.TempPath);
+        Add(TempPath(job.Id));
+
+        var dirs = new HashSet<string>(StringComparer.Ordinal);
+        void AddDir(string? dir)
+        {
+            if (string.IsNullOrEmpty(dir))
+            {
+                return;
+            }
+
+            try
+            {
+                dirs.Add(Path.GetFullPath(dir));
+            }
+            catch (Exception)
+            {
+                // A path the OS will not open is not a capture directory.
+            }
+        }
+
+        AddDir(FilesDir());
+        AddDir(Path.GetDirectoryName(job.TempPath));
+        AddDir(Path.GetDirectoryName(extra));
+        foreach (var dir in dirs)
+        {
+            if (!Directory.Exists(dir))
+            {
+                continue;
+            }
+
+            IEnumerable<string> files;
+            try
+            {
+                files = Directory.EnumerateFiles(dir, job.Id + "*.partial.ts");
+            }
+            catch (Exception)
+            {
+                continue;
+            }
+
+            foreach (var file in files)
+            {
+                Add(file);
+            }
+        }
+
+        list.Sort((a, b) =>
+        {
+            var order = PartialIndex(job.Id, a).CompareTo(PartialIndex(job.Id, b));
+            return order != 0 ? order : string.Compare(a, b, StringComparison.Ordinal);
+        });
+        return list;
+    }
+
+    private void DeleteCaptureParts(StoredJob job, string? extra, string? keep)
+    {
+        foreach (var path in CapturePartPaths(job, extra))
+        {
+            if (keep != null && SamePath(path, keep))
+            {
+                continue;
+            }
+
+            TryDelete(path);
+        }
+
+        var joined = Path.Combine(FilesDir(), job.Id + ".joined.ts");
+        if (keep == null || !SamePath(joined, keep))
+        {
+            TryDelete(joined);
+        }
+    }
+
+    private static int PartialIndex(string id, string path)
+    {
+        var name = Path.GetFileName(path);
+        if (string.Equals(name, id + ".partial.ts", StringComparison.OrdinalIgnoreCase))
+        {
+            return 1;
+        }
+
+        var prefix = id + "-";
+        const string suffix = ".partial.ts";
+        if (name.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)
+            && name.EndsWith(suffix, StringComparison.OrdinalIgnoreCase))
+        {
+            var middle = name.Substring(prefix.Length, name.Length - prefix.Length - suffix.Length);
+            if (int.TryParse(middle, NumberStyles.None, CultureInfo.InvariantCulture, out var index) && index >= 2)
+            {
+                return index;
+            }
+        }
+
+        return int.MaxValue;
+    }
+
+    private static bool IsMpegTs(string path)
+    {
+        try
+        {
+            using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+            if (stream.Length < 188)
+            {
+                return false;
+            }
+
+            return stream.ReadByte() == 0x47;
+        }
+        catch (Exception)
+        {
+            return false;
+        }
+    }
+
+    private static bool TryConcatMpegTs(IReadOnlyList<string> sources, string destination)
+    {
+        FileStream? output = null;
+        try
+        {
+            var directory = Path.GetDirectoryName(destination);
+            if (!string.IsNullOrEmpty(directory))
+            {
+                Directory.CreateDirectory(directory);
+            }
+
+            output = new FileStream(destination, FileMode.Create, FileAccess.Write, FileShare.None);
+            var buffer = new byte[188 * 64];
+            foreach (var source in sources)
+            {
+                using var input = new FileStream(source, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+                var usable = input.Length - (input.Length % 188);
+                if (usable < 188)
+                {
+                    continue;
+                }
+
+                if (input.ReadByte() != 0x47)
+                {
+                    output.Dispose();
+                    output = null;
+                    TryDelete(destination);
+                    return false;
+                }
+
+                input.Position = 0;
+                long left = usable;
+                while (left > 0)
+                {
+                    var want = (int)Math.Min(buffer.Length, left);
+                    var read = input.Read(buffer, 0, want);
+                    if (read <= 0)
+                    {
+                        break;
+                    }
+
+                    output.Write(buffer, 0, read);
+                    left -= read;
+                }
+            }
+
+            output.Dispose();
+            output = null;
+            if (FileLength(destination) <= 0)
+            {
+                TryDelete(destination);
+                return false;
+            }
+
+            return true;
+        }
+        catch (Exception)
+        {
+            try
+            {
+                output?.Dispose();
+            }
+            catch (Exception)
+            {
+                // The failed join is removed below.
+            }
+
+            TryDelete(destination);
+            return false;
+        }
+    }
+
+    private static bool SamePath(string a, string b)
+    {
+        try
+        {
+            return string.Equals(Path.GetFullPath(a), Path.GetFullPath(b), StringComparison.Ordinal);
+        }
+        catch (Exception)
+        {
+            return string.Equals(a, b, StringComparison.Ordinal);
+        }
     }
 
     private static string? UsableUrl(string? url) =>
@@ -1363,7 +1713,7 @@ public sealed class DirectIptvRecordingService : IDisposable
         }
         catch (Exception)
         {
-            // The next start replaces a partial file. A locked one can wait.
+            // A locked partial can wait. The next capture must not overwrite it.
         }
     }
 
